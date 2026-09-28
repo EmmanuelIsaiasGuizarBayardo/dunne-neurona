@@ -44,10 +44,9 @@ Si se realizaron modificaciones, indicarlo: *"adaptado de"* en lugar de *"por"*.
 ## Procedencia del modelo
 
 El modelo 3D de la motoneurona fue creado desde cero por **Mauricio Mendiola
-Rivera**, quien cedió los derechos de uso, modificación y distribución a la
-División Universitaria de Neuroingeniería. No incorpora geometría de terceros,
-por lo que la organización puede escalarlo, modificarlo y redistribuirlo sin
-restricciones heredadas.
+Rivera** como aportación a la División Universitaria de Neuroingeniería, y se
+publica aquí bajo CC BY 4.0 con su autorización. No incorpora geometría de
+terceros.
 
 Las variantes que hay en el repositorio son transformaciones automatizadas de
 ese original, producidas por los scripts de `tools/`.

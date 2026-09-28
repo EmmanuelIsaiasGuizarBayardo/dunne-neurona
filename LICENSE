@@ -1,8 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Emmanuel Isaías Guízar Bayardo y Mauricio Mendiola Rivera,
-División Universitaria de Neuroingeniería (DUNNE), Universidad Nacional
-Autónoma de México.
+Copyright (c) 2026 Emmanuel Isaías Guízar Bayardo
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Esta licencia cubre el código fuente del repositorio. El modelo 3D, el
-contenido didáctico y las imágenes se distribuyen bajo Creative Commons
-Atribución 4.0 Internacional: ver LICENSE-CONTENIDO.md.

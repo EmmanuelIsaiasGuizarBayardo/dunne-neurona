@@ -1,7 +1,7 @@
 # Neurona AR · DUNNE
 
 Material didáctico interactivo de la División Universitaria de Neuroingeniería
-(DUNNE), Facultad de Medicina, UNAM.
+(DUNNE), Facultad de Ingeniería, UNAM.
 
 Una motoneurona en 3D y realidad aumentada, sin instalar nada, y una sala
 interactiva donde cada dispositivo del público es una neurona de un circuito
@@ -367,14 +367,15 @@ ciclos de vida distintos y no deben acoplarse.
 ## Créditos
 
 **Modelo 3D y aplicación en Unity:** Mauricio Mendiola Rivera. El modelo fue
-creado desde cero, sin incorporar geometría de terceros, y sus derechos de
-uso, modificación y distribución fueron cedidos a la División Universitaria de
-Neuroingeniería. El proyecto puede escalarse y redistribuirse sin
-restricciones heredadas.
+creado desde cero, sin incorporar geometría de terceros, como aportación a la
+División Universitaria de Neuroingeniería.
 
 **Limpieza del modelo, contenido didáctico, sitio web y sala interactiva:**
 Emmanuel Isaías Guízar Bayardo, División Universitaria de Neuroingeniería,
 UNAM.
+
+**Revisión académica del contenido:** Dr. Miguel Serrano-Reyes y M. Alicia
+Castillo Martínez.
 
 El modelo representa una motoneurona somática: soma y dendritas en la médula
 espinal, axón en un nervio periférico mielinizado por células de Schwann.
