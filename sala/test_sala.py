@@ -144,6 +144,128 @@ async def main():
         check("el evento trae lo que el grafo necesita",
               all(k in e for k in ("seat", "targets", "delay_ms", "polarity")))
 
+    # --- circuitos independientes, control del operador y bloqueo ---
+    async with websockets.connect(URL) as a, websockets.connect(URL) as b, \
+               websockets.connect(URL) as c, websockets.connect(URL) as d, \
+               websockets.connect(URL + "?role=mural") as mural:
+        for ws in (a, b, c, d, mural):
+            await recv(ws, "welcome")
+
+        await mural.send(json.dumps({"type": "config", "topology": "cadena", "groups": 2}))
+        r = await recv_until(mural, "roster",
+                             lambda m: m["config"]["groups"] == 2
+                             and m["config"]["topology"] == "cadena", 6.0)
+        grupos = {n["seat"]: n["group"] for n in r["neurons"]}
+        check("cuatro asientos repartidos en dos circuitos",
+              grupos == {1: 1, 2: 1, 3: 2, 4: 2}, grupos)
+        check("las aristas no cruzan de circuito",
+              sorted(r["edges"]) == [[1, 2], [3, 4]], r["edges"])
+
+        # Un spike del asiento 2 no puede alcanzar al 3: están en circuitos
+        # distintos aunque sean asientos consecutivos.
+        await b.send(json.dumps({"type": "spike"}))
+        try:
+            await asyncio.wait_for(recv(c, "input", 1.0), timeout=1.2)
+            check("la señal no cruza entre circuitos", False)
+        except (TimeoutError, asyncio.TimeoutError):
+            check("la señal no cruza entre circuitos", True)
+
+        # El operador cambia la mielina de un asiento concreto.
+        await mural.send(json.dumps({"type": "myelin", "on": False, "seat": 1}))
+        m = await recv(a, "myelin", 4.0)
+        check("el operador apaga la mielina de un asiento", m["on"] is False, m)
+
+        # Con el bloqueo puesto, la neurona ya no puede cambiarse a sí misma.
+        await mural.send(json.dumps({"type": "config", "locked": True}))
+        await recv_until(mural, "roster", lambda m: m["config"]["locked"], 6.0)
+        await a.send(json.dumps({"type": "polarity", "kind": "inhibitory"}))
+        blocked = await recv(a, "locked", 4.0)
+        check("el bloqueo impide que la neurona cambie su tipo",
+              blocked["reason"] == "polarity", blocked)
+
+        # Pero el operador sí puede, incluso con el bloqueo puesto.
+        await mural.send(json.dumps({"type": "polarity", "kind": "inhibitory", "seat": 1}))
+        p = await recv(a, "polarity", 4.0)
+        check("el operador sí puede con el bloqueo puesto", p["kind"] == "inhibitory", p)
+
+        await mural.send(json.dumps({"type": "config", "locked": False, "groups": 1}))
+        r2 = await recv_until(mural, "roster",
+                              lambda m: m["config"]["groups"] == 1
+                              and not m["config"]["locked"], 6.0)
+        check("volver a un circuito reconecta la cadena",
+              sorted(r2["edges"]) == [[1, 2], [2, 3], [3, 4]], r2["edges"])
+
+    # --- juegos colaborativos ---
+    async with websockets.connect(URL) as a, websockets.connect(URL) as b, \
+               websockets.connect(URL) as c, websockets.connect(URL) as d, \
+               websockets.connect(URL + "?role=mural") as mural:
+        for ws in (a, b, c, d, mural):
+            await recv(ws, "welcome")
+
+        # Sincronía: con cuatro neuronas y quórum de 0.5 hacen falta dos.
+        await mural.send(json.dumps({"type": "game", "action": "start", "kind": "sync"}))
+        st = await recv_until(mural, "game", lambda m: m.get("state"), 4.0)
+        check("la sincronía exige un quórum", st["state"]["quorum"] == 2, st["state"])
+
+        await a.send(json.dumps({"type": "tap"}))
+        st = await recv_until(mural, "game",
+                              lambda m: (m.get("state") or {}).get("in_window") == 1, 4.0)
+        check("un toque solo no dispara", st["state"]["hits"] == 0, st["state"])
+
+        await b.send(json.dumps({"type": "tap"}))
+        fire = await recv_until(mural, "game", lambda m: m.get("event") == "fire", 4.0)
+        check("dos toques coincidentes disparan la neurona compartida", fire["kind"] == "sync")
+
+        # Fuera de la ventana no hay coincidencia.
+        await asyncio.sleep(1.2)
+        await c.send(json.dumps({"type": "tap"}))
+        await asyncio.sleep(0.7)
+        await d.send(json.dumps({"type": "tap"}))
+        st = await recv_until(mural, "game",
+                              lambda m: (m.get("state") or {}).get("in_window") == 1, 4.0)
+        check("toques espaciados no se suman", st["state"]["hits"] == 1, st["state"])
+
+        await mural.send(json.dumps({"type": "game", "action": "stop"}))
+        await recv_until(mural, "game", lambda m: m.get("state") is None, 4.0)
+
+        # Tirón: dos excitatorias contra dos inhibitorias.
+        await mural.send(json.dumps({"type": "game", "action": "start", "kind": "tug",
+                                     "duration_s": 30, "step_mv": 3.0, "max_rate_hz": 3}))
+        r = await recv_until(mural, "roster", lambda m: m["config"]["locked"], 4.0)
+        equipos = {n["seat"]: n["polarity"] for n in r["neurons"]}
+        check("el tirón forma dos equipos y bloquea los tipos",
+              equipos == {1: "excitatory", 2: "excitatory", 3: "inhibitory", 4: "inhibitory"},
+              equipos)
+
+        # El tope por persona: diez toques seguidos de una sola neurona solo
+        # cuentan tres en un segundo.
+        for _ in range(10):
+            await a.send(json.dumps({"type": "tap"}))
+        await asyncio.sleep(0.25)
+        st = await recv_until(mural, "game",
+                              lambda m: (m.get("state") or {}).get("count", {}).get("excitatory", 0) >= 3,
+                              4.0)
+        check("el tope impide que una sola persona domine",
+              st["state"]["count"]["excitatory"] == 3, st["state"]["count"])
+
+        # Dos personas participando superan a una sola insistiendo.
+        for _ in range(3):
+            await b.send(json.dumps({"type": "tap"}))
+        fire = await recv_until(mural, "game", lambda m: m.get("event") == "fire", 4.0)
+        check("la excitación coordinada alcanza el umbral", fire["winner"] == "excitatory")
+
+        await mural.send(json.dumps({"type": "game", "action": "stop"}))
+        r = await recv_until(mural, "roster", lambda m: not m["config"]["locked"], 4.0)
+        check("detener el juego libera el bloqueo", not r["config"]["locked"])
+
+        # Tirón con tiempo agotado: gana la inhibición.
+        await mural.send(json.dumps({"type": "game", "action": "start", "kind": "tug",
+                                     "duration_s": 0.6}))
+        end = await recv_until(mural, "game", lambda m: m.get("event") == "end", 4.0)
+        check("si el tiempo se agota sin disparo, gana la inhibición",
+              end["winner"] == "inhibitory")
+        await mural.send(json.dumps({"type": "game", "action": "stop"}))
+
     # --- al salir todos, el censo queda vacío ---
     await asyncio.sleep(0.3)
     check("los clientes se dieron de baja", len(srv.hub.clients) == 0, len(srv.hub.clients))

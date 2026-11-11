@@ -47,6 +47,8 @@ import argparse
 import base64
 import hashlib
 import json
+import math
+from collections import deque
 import socket
 import struct
 import threading
@@ -89,9 +91,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "weight": 0.6,
 
     "topology": "cadena",
+
+    # Número de circuitos independientes. Con 2, los asientos se reparten en
+    # dos mitades que no se conectan entre sí, lo que permite comparar dos
+    # condiciones en paralelo o enfrentarlas.
+    "groups": 1,
+
+    # Con el bloqueo activo, las neuronas no pueden cambiar su propio tipo:
+    # solo el operador desde el mural. Necesario cuando la configuración del
+    # circuito es parte de la demostración.
+    "locked": False,
 }
 
 TOPOLOGIES = ("cadena", "anillo", "convergencia", "divergencia")
+
+# Juegos colaborativos. Ambos convierten a todo el grupo en las entradas de
+# una sola neurona compartida, de modo que el resultado depende del grupo y
+# no de una persona.
+GAME_DEFAULTS: dict[str, dict[str, float]] = {
+    # Detección de coincidencias: la neurona compartida dispara solo si una
+    # fracción del grupo toca dentro de la misma ventana breve. No se gana con
+    # velocidad sino con coordinación.
+    "sync": {"window_ms": 500.0, "quorum": 0.5, "refractory_ms": 900.0},
+
+    # Suma de excitación contra inhibición. El tope de toques por persona
+    # hace que gane el equipo donde más gente participa, no donde alguien
+    # teclea más rápido; sin él el juego favorece a quien tiene más agilidad.
+    "tug": {"step_mv": 0.9, "tau_ms": 1800.0, "duration_s": 20.0,
+            "max_rate_hz": 3.0},
+}
+V_REST, V_THRESHOLD, V_FLOOR = -70.0, -55.0, -85.0
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +234,7 @@ class Client:
     # una neurona libera el mismo neurotransmisor en todos sus terminales, de
     # modo que su efecto es excitatorio o inhibitorio, nunca mixto.
     polarity: str = "excitatory"
+    group: int = 1
     last_vm: float = -70.0
     alive: bool = True
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -238,6 +268,7 @@ class Hub:
             self.config.update(config)
         self._next_cid = 1
         self._lock = threading.RLock()
+        self.game: dict[str, Any] | None = None
         self.log: Callable[[str], None] = print
 
     # -- ciclo de vida ----------------------------------------------------
@@ -263,12 +294,14 @@ class Hub:
 
             self.clients[cid] = client
 
+        self.regroup()
         client.send({
             "type": "welcome",
             "id": cid,
             "seat": client.seat,
             "role": role,
             "polarity": client.polarity,
+            "group": client.group,
             "config": self.config,
             "targets": self.targets_of(client.seat) if client.seat else [],
         })
@@ -281,10 +314,35 @@ class Hub:
         with self._lock:
             client.alive = False
             self.clients.pop(client.cid, None)
+        self.regroup()
         self.broadcast_roster()
         self.log(f"sale {client.role} cid={client.cid} asiento={client.seat}")
 
     # -- topología --------------------------------------------------------
+
+    def regroup(self) -> None:
+        """Reparte los asientos entre los circuitos configurados.
+
+        Los asientos ordenados se parten en mitades contiguas, de modo que
+        cada circuito quede con una secuencia continua y la topología se
+        aplique dentro de cada uno por separado.
+        """
+        order = self.seats()
+        wanted = max(1, int(self.config.get("groups", 1)))
+        half = (len(order) + 1) // 2
+        with self._lock:
+            for client in self.clients.values():
+                if client.seat is None:
+                    continue
+                if wanted <= 1:
+                    client.group = 1
+                else:
+                    client.group = 1 if order.index(client.seat) < half else 2
+
+    def group_of(self, seat: int) -> int:
+        """Circuito al que pertenece un asiento."""
+        client = self.by_seat(seat)
+        return client.group if client else 1
 
     def seats(self) -> list[int]:
         """Asientos ocupados, en orden."""
@@ -301,7 +359,9 @@ class Hub:
         """
         if seat is None:
             return []
-        order = self.seats()
+        # Los destinos se buscan solo dentro del mismo circuito.
+        mine = self.group_of(seat)
+        order = [s for s in self.seats() if self.group_of(s) == mine]
         if seat not in order or len(order) < 2:
             return []
 
@@ -377,6 +437,160 @@ class Hub:
         }
         self.broadcast(event, roles=("mural",))
 
+    # -- juegos -----------------------------------------------------------
+
+    def participants(self) -> list[Client]:
+        """Neuronas conectadas que participan en el juego."""
+        with self._lock:
+            return [c for c in self.clients.values() if c.role == "neuron"]
+
+    def start_game(self, kind: str, params: dict[str, Any]) -> None:
+        """Inicia un juego colaborativo.
+
+        En el juego de excitación contra inhibición los equipos se forman
+        repartiendo los asientos en dos mitades y se bloquean los tipos, para
+        que nadie cambie de equipo a mitad de la partida.
+        """
+        if kind not in GAME_DEFAULTS:
+            return
+        settings = {**GAME_DEFAULTS[kind]}
+        for key in settings:
+            if key in params:
+                try:
+                    settings[key] = float(params[key])
+                except (TypeError, ValueError):
+                    pass
+
+        if kind == "tug":
+            order = self.seats()
+            half = (len(order) + 1) // 2
+            for client in self.participants():
+                if client.seat is not None:
+                    client.polarity = ("excitatory" if order.index(client.seat) < half
+                                       else "inhibitory")
+                    client.send({"type": "polarity", "kind": client.polarity})
+            self.config["locked"] = True
+
+        with self._lock:
+            self.game = {
+                "kind": kind, "settings": settings, "started": time.time(),
+                "taps": deque(), "rate": {}, "v": V_REST, "hits": 0,
+                "quiet_until": 0.0, "count": {"excitatory": 0, "inhibitory": 0},
+                "over": False, "winner": None,
+            }
+
+        self.broadcast_roster()
+        self.broadcast_game()
+        if kind == "tug":
+            threading.Thread(target=self._tug_clock, args=(self.game,), daemon=True).start()
+
+    def stop_game(self) -> None:
+        """Detiene el juego en curso y libera el bloqueo de tipos."""
+        with self._lock:
+            self.game = None
+        self.config["locked"] = False
+        self.broadcast({"type": "game", "state": None})
+        self.broadcast_roster()
+
+    def on_tap(self, client: Client) -> None:
+        """Registra un toque de una neurona durante un juego."""
+        with self._lock:
+            game = self.game
+            if game is None or game["over"] or client.seat is None:
+                return
+            now = time.time()
+
+            if game["kind"] == "sync":
+                if now < game["quiet_until"]:
+                    return
+                window = game["settings"]["window_ms"] / 1000.0
+                game["taps"].append((now, client.seat))
+                while game["taps"] and now - game["taps"][0][0] > window:
+                    game["taps"].popleft()
+                distinct = len({seat for _, seat in game["taps"]})
+                needed = self.quorum(game)
+                fired = distinct >= needed
+                if fired:
+                    game["hits"] += 1
+                    game["taps"].clear()
+                    # Periodo refractario: evita contar dos veces la misma
+                    # oleada de toques que llega ligeramente escalonada.
+                    game["quiet_until"] = now + game["settings"]["refractory_ms"] / 1000.0
+
+            else:  # tug
+                stamps = game["rate"].setdefault(client.seat, deque())
+                while stamps and now - stamps[0] > 1.0:
+                    stamps.popleft()
+                if len(stamps) >= game["settings"]["max_rate_hz"]:
+                    return  # por encima del tope: no cuenta
+                stamps.append(now)
+                sign = 1.0 if client.polarity == "excitatory" else -1.0
+                game["v"] = max(V_FLOOR, game["v"] + sign * game["settings"]["step_mv"])
+                game["count"][client.polarity] += 1
+                fired = game["v"] >= V_THRESHOLD
+                if fired:
+                    game["over"], game["winner"] = True, "excitatory"
+
+        if fired:
+            self.broadcast({"type": "game", "event": "fire",
+                            "kind": game["kind"], "winner": game.get("winner")})
+        self.broadcast_game()
+
+    def quorum(self, game: dict[str, Any]) -> int:
+        """Número de neuronas distintas que deben coincidir en la ventana."""
+        return max(2, math.ceil(game["settings"]["quorum"] * len(self.participants())))
+
+    def _tug_clock(self, game: dict[str, Any]) -> None:
+        """Fuga del potencial compartido y límite de tiempo del juego."""
+        dt = 0.1
+        while True:
+            time.sleep(dt)
+            with self._lock:
+                if self.game is not game or game["over"]:
+                    return
+                tau = game["settings"]["tau_ms"] / 1000.0
+                game["v"] += (V_REST - game["v"]) * dt / tau
+                elapsed = time.time() - game["started"]
+                timeout = elapsed >= game["settings"]["duration_s"]
+                if timeout:
+                    # Si el tiempo se agota sin alcanzar el umbral, la
+                    # inhibición logró sostener a la neurona por debajo.
+                    game["over"], game["winner"] = True, "inhibitory"
+            if timeout:
+                self.broadcast({"type": "game", "event": "end",
+                                "kind": "tug", "winner": "inhibitory"})
+            self.broadcast_game()
+            if timeout:
+                return
+
+    def game_state(self) -> dict[str, Any] | None:
+        """Estado del juego, en la forma que consumen el mural y los clientes."""
+        with self._lock:
+            game = self.game
+            if game is None:
+                return None
+            state = {"kind": game["kind"], "over": game["over"],
+                     "winner": game["winner"]}
+            if game["kind"] == "sync":
+                state.update({
+                    "in_window": len({seat for _, seat in game["taps"]}),
+                    "quorum": self.quorum(game), "hits": game["hits"],
+                    "window_ms": game["settings"]["window_ms"],
+                })
+            else:
+                elapsed = time.time() - game["started"]
+                state.update({
+                    "v": round(game["v"], 2), "threshold": V_THRESHOLD,
+                    "rest": V_REST, "floor": V_FLOOR,
+                    "remaining_s": round(max(0.0, game["settings"]["duration_s"] - elapsed), 1),
+                    "count": dict(game["count"]),
+                })
+            return state
+
+    def broadcast_game(self) -> None:
+        """Difunde el estado del juego a todos los clientes."""
+        self.broadcast({"type": "game", "state": self.game_state()})
+
     # -- difusión ---------------------------------------------------------
 
     def broadcast(self, message: dict[str, Any],
@@ -393,7 +607,8 @@ class Hub:
         with self._lock:
             neurons = sorted(
                 ({"seat": c.seat, "id": c.cid, "myelinated": c.myelinated,
-                  "polarity": c.polarity, "vm": round(c.last_vm, 2)}
+                  "polarity": c.polarity, "group": c.group,
+                  "vm": round(c.last_vm, 2)}
                  for c in self.clients.values() if c.role == "neuron"),
                 key=lambda n: n["seat"] or 0,
             )
@@ -439,10 +654,23 @@ class Hub:
                                     "v": client.last_vm}, roles=("mural",))
 
         elif kind == "myelin":
-            client.myelinated = bool(message.get("on", True))
+            # El bloqueo se aplica en el servidor y no solo en la interfaz:
+            # ocultar un botón no impide que alguien mande el mensaje.
+            if client.role == "neuron" and self.config.get("locked"):
+                client.send({"type": "locked", "reason": "myelin"})
+                return
+            target = client
+            if "seat" in message and client.role == "mural":
+                target = self.by_seat(int(message["seat"])) or client
+            target.myelinated = bool(message.get("on", True))
+            if target is not client:
+                target.send({"type": "myelin", "on": target.myelinated})
             self.broadcast_roster()
 
         elif kind == "polarity":
+            if client.role == "neuron" and self.config.get("locked"):
+                client.send({"type": "locked", "reason": "polarity"})
+                return
             wanted = message.get("kind")
             if wanted in ("excitatory", "inhibitory"):
                 # Puede venir del propio dispositivo o del mural, que indica
@@ -467,17 +695,33 @@ class Hub:
             if message.get("topology") in TOPOLOGIES:
                 self.config["topology"] = message["topology"]
                 changed = True
+            if "groups" in message:
+                self.config["groups"] = max(1, min(2, int(message["groups"])))
+                self.regroup()
+                changed = True
+            if "locked" in message:
+                self.config["locked"] = bool(message["locked"])
+                changed = True
             if changed:
                 self.broadcast_roster()
                 for c in list(self.clients.values()):
                     if c.role == "neuron":
                         c.send({"type": "welcome", "id": c.cid, "seat": c.seat,
                                 "role": c.role, "polarity": c.polarity,
-                                "config": self.config,
+                                "group": c.group, "config": self.config,
                                 "targets": self.targets_of(c.seat)})
 
         elif kind == "reset":
             self.broadcast({"type": "reset"}, roles=("neuron",))
+
+        elif kind == "tap" and client.role == "neuron":
+            self.on_tap(client)
+
+        elif kind == "game" and client.role == "mural":
+            if message.get("action") == "start":
+                self.start_game(str(message.get("kind")), message)
+            elif message.get("action") == "stop":
+                self.stop_game()
 
 
 # ---------------------------------------------------------------------------

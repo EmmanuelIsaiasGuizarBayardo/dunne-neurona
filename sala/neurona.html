@@ -18,7 +18,7 @@
 <body class="room">
 
 <header class="bar">
-  <p class="seat">Neurona <b id="seat">—</b> <span class="polarity" id="polarityTag"></span></p>
+  <p class="seat">Neurona <b id="seat">—</b> <span class="polarity" id="polarityTag"></span><span class="circuit" id="circuitTag"></span></p>
   <div class="bar-right">
     <button type="button" class="ghost" id="fullscreen" hidden>Pantalla completa</button>
     <p class="wire" id="wire">conectando…</p>
@@ -27,18 +27,22 @@
 
 <main class="cell">
 
+  <!-- Indicaciones del juego en curso. Fuera del juego no se muestra. -->
+  <p class="mission" id="mission" hidden></p>
+
   <model-viewer class="cell-model" id="viewer"
     src="./assets/Neurona_sala.glb"
     alt="Modelo de una motoneurona: soma naranja, dendritas azules, axón verde con cuatro vainas de mielina amarillas."
     poster="./assets/poster.webp"
     loading="eager"
-    camera-controls
-    touch-action="none"
+    disable-zoom
     interaction-prompt="none"
     environment-image="neutral"
     exposure="1.1"
     shadow-intensity="0.3"
     camera-orbit="-14deg 24deg 106%"></model-viewer>
+
+  <div class="ripple-layer" id="rippleLayer" aria-hidden="true"></div>
 
   <!-- Trazo del potencial de membrana. Es el corazón didáctico: sin él la
        suma temporal se intuye pero no se ve. -->
@@ -58,6 +62,7 @@
   <div class="row">
     <button type="button" class="ghost" id="myelin" aria-pressed="false">Quitar mielina</button>
     <button type="button" class="ghost" id="polarity" aria-pressed="false">Volverla inhibitoria</button>
+    <p class="dim" id="lockNote" hidden>el tipo lo controla el mural</p>
   </div>
   <p class="dim" id="downstream">—</p>
 </footer>
@@ -89,6 +94,7 @@ let targets = [];
 let seat = null;
 let myelinated = true;
 let polarity = "excitatory";
+let locked = false;
 
 let vm = V_REST;
 let refractoryUntil = 0;
@@ -138,6 +144,8 @@ socket.addEventListener("message", event => {
     config = { ...config, ...msg.config };
     targets = msg.targets ?? [];
     setPolarity(msg.polarity ?? "excitatory", false);
+    setLocked(!!config.locked);
+    showCircuit(msg.group ?? 1);
     $("seat").textContent = seat ?? "—";
     showDilation();
     describeDownstream();
@@ -149,12 +157,30 @@ socket.addEventListener("message", event => {
   } else if (msg.type === "roster") {
     config = { ...config, ...msg.config };
     showDilation();
+    setLocked(!!config.locked);
+    const mine = msg.neurons?.find(n => n.seat === seat);
+    if (mine) {
+      showCircuit(mine.group ?? 1);
+      if (mine.myelinated !== myelinated) setMyelin(mine.myelinated, false);
+    }
 
   } else if (msg.type === "polarity") {
     setPolarity(msg.kind, false);
 
+  } else if (msg.type === "myelin") {
+    setMyelin(!!msg.on, false);
+
+  } else if (msg.type === "locked") {
+    // El servidor rechazó el cambio; se avisa en lugar de no hacer nada.
+    document.body.dataset.denied = "on";
+    setTimeout(() => { delete document.body.dataset.denied; }, 500);
+
   } else if (msg.type === "input") {
     inject(msg.weight ?? config.weight, msg.from_seat);
+
+  } else if (msg.type === "game") {
+    if ("state" in msg) setGame(msg.state);
+    if (msg.event) celebrate(msg);
 
   } else if (msg.type === "reset") {
     vm = V_REST;
@@ -367,19 +393,119 @@ function pulse(kind) {
 
 /* -------------------------------------------------------------- controles -- */
 
-$("stim").addEventListener("click", () => inject(config.weight));
+/* ------------------------------------------------------- estimular tocando -- */
 
-$("myelin").addEventListener("click", () => {
-  myelinated = !myelinated;
-  const button = $("myelin");
-  button.setAttribute("aria-pressed", String(!myelinated));
-  button.textContent = myelinated ? "Quitar mielina" : "Devolver mielina";
-  document.body.dataset.demyelinated = myelinated ? "" : "on";
-  paintMyelin();
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "myelin", on: myelinated }));
+/* Todo el modelo es el área de toque, no solo el botón. Sin controles de
+   cámara, el gesto ya no compite con la rotación: un toque rápido de un niño
+   no hace girar ni saltar la neurona, solo la estimula. */
+let game = null;
+
+function stimulate(x = null, y = null) {
+  if (game && !game.over) {
+    // Durante un juego cada persona es una entrada de la neurona compartida,
+    // no de la propia: se envía el toque y no se dispara localmente, para no
+    // desatar una avalancha en el circuito mientras todos tocan a la vez.
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "tap" }));
+    }
+  } else {
+    inject(config.weight);
   }
+  ripple(x, y);
+}
+
+/** Onda en el punto tocado: confirma el gesto aunque el voltaje no cambie. */
+function ripple(x, y) {
+  // Coordenadas relativas a la capa de ondas, que cubre toda la célula; así
+  // la onda cae donde fue el dedo aunque el modelo cambie de lugar.
+  const layer = $("rippleLayer");
+  const box = layer.getBoundingClientRect();
+  const model = viewer.getBoundingClientRect();
+  const dot = document.createElement("span");
+  dot.className = "ripple";
+  dot.style.left = `${(x ?? model.left + model.width / 2) - box.left}px`;
+  dot.style.top = `${(y ?? model.top + model.height / 2) - box.top}px`;
+  $("rippleLayer").appendChild(dot);
+  setTimeout(() => dot.remove(), 600);
+}
+
+viewer.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  stimulate(event.clientX, event.clientY);
 });
+
+$("stim").addEventListener("click", () => stimulate());
+
+/* ------------------------------------------------------------------ juegos -- */
+
+const MISSION = {
+  sync: () => "¡Toquen todos al mismo tiempo!",
+  tug: () => polarity === "excitatory"
+    ? "Equipo excitatorio: ¡hagan que dispare!"
+    : "Equipo inhibitorio: ¡no la dejen disparar!",
+};
+
+function setGame(state) {
+  game = state;
+  const mission = $("mission");
+  if (!state) {
+    mission.hidden = true;
+    document.body.dataset.game = "";
+    $("stim").textContent = "Estimular dendrita";
+    return;
+  }
+  document.body.dataset.game = state.kind;
+  mission.hidden = false;
+  if (state.over) {
+    const won = state.kind === "tug" && state.winner === polarity;
+    mission.textContent = state.kind === "tug"
+      ? (won ? "¡Lo lograron!" : "El otro equipo ganó esta vez")
+      : "¡Disparó!";
+  } else {
+    mission.textContent = MISSION[state.kind]();
+  }
+  $("stim").textContent = state.kind === "sync" ? "¡Ahora!" : "Toca";
+}
+
+/** Destello compartido cuando la neurona del grupo dispara. */
+function celebrate(msg) {
+  document.body.dataset.fire = "on";
+  setTimeout(() => { delete document.body.dataset.fire; }, 700);
+}
+
+/** Aplica el estado de la mielina. `announce` distingue el cambio propio del
+ *  que ordena el operador desde el mural. */
+function setMyelin(on, announce = true) {
+  myelinated = on;
+  const button = $("myelin");
+  button.setAttribute("aria-pressed", String(!on));
+  button.textContent = on ? "Quitar mielina" : "Devolver mielina";
+  document.body.dataset.demyelinated = on ? "" : "on";
+  paintMyelin();
+  if (announce && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "myelin", on }));
+  }
+}
+
+$("myelin").addEventListener("click", () => setMyelin(!myelinated));
+
+/* Con el bloqueo puesto, el tipo de neurona lo decide el operador. Los
+   controles se ocultan, pero quien manda es el servidor: la interfaz solo
+   refleja la regla. */
+function setLocked(on) {
+  locked = on;
+  document.body.dataset.locked = on ? "on" : "";
+  $("myelin").hidden = on;
+  $("polarity").hidden = on;
+  $("lockNote").hidden = !on;
+}
+
+/** Muestra el circuito cuando hay más de uno. */
+function showCircuit(group) {
+  $("circuitTag").textContent = (config.groups ?? 1) > 1
+    ? (group === 2 ? "circuito B" : "circuito A") : "";
+  document.body.dataset.circuit = String(group);
+}
 
 /** Cambia la polaridad de la neurona completa, no de una sinapsis. */
 function setPolarity(kind, announce = true) {

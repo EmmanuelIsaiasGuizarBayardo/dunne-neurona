@@ -28,6 +28,16 @@
 
   <!-- Raster plot: una fila por neurona, el tiempo hacia la derecha. Es la
        figura estándar de la electrofisiología, y aquí la producen personas. -->
+  <!-- Panel del juego: se superpone al raster mientras hay partida. -->
+  <section class="game-panel" id="gamePanel" hidden aria-live="polite">
+    <p class="game-title" id="gameTitle"></p>
+    <div class="gauge" id="gauge">
+      <div class="gauge-fill" id="gaugeFill"></div>
+      <div class="gauge-mark" id="gaugeMark"></div>
+    </div>
+    <p class="game-readout" id="gameReadout"></p>
+  </section>
+
   <section class="panel raster-panel" aria-labelledby="raster-title">
     <h2 id="raster-title" class="panel-title">
       Actividad <span class="dim">cada marca es un potencial de acción</span>
@@ -63,8 +73,26 @@
   </div>
 
   <div class="console-block">
-    <p class="console-label">Polaridad · toca una neurona</p>
+    <p class="console-label">Circuitos</p>
+    <div class="chips">
+      <button type="button" class="chip" data-groups="1">uno</button>
+      <button type="button" class="chip" data-groups="2">dos</button>
+      <button type="button" class="chip" id="lock">Bloquear tipos</button>
+    </div>
+  </div>
+
+  <div class="console-block">
+    <p class="console-label">Tipo · toca para polaridad, mantén para mielina</p>
     <div class="chips" id="polChips"></div>
+  </div>
+
+  <div class="console-block">
+    <p class="console-label">Juego colaborativo</p>
+    <div class="chips">
+      <button type="button" class="chip" data-game="sync">Sincronía</button>
+      <button type="button" class="chip" data-game="tug">Excitación contra inhibición</button>
+      <button type="button" class="chip" id="gameStop">Detener</button>
+    </div>
   </div>
 
   <div class="console-block console-end">
@@ -115,6 +143,10 @@ socket.addEventListener("message", event => {
     renderGraph();
     renderPolarityChips();
 
+  } else if (msg.type === "game") {
+    if ("state" in msg) renderGame(msg.state);
+    if (msg.event) flashGame(msg);
+
   } else if (msg.type === "vm") {
     vms.set(msg.seat, msg.v);
 
@@ -141,6 +173,12 @@ function renderVitals() {
     chip.setAttribute("aria-pressed",
       String(Number(chip.dataset.dil) === Number(roster.config.dilation)));
   }
+  for (const chip of document.querySelectorAll("[data-groups]")) {
+    chip.setAttribute("aria-pressed",
+      String(Number(chip.dataset.groups) === Number(roster.config.groups ?? 1)));
+  }
+  $("lock").setAttribute("aria-pressed", String(!!roster.config.locked));
+  $("lock").textContent = roster.config.locked ? "Tipos bloqueados" : "Bloquear tipos";
   for (const chip of document.querySelectorAll("[data-topo]")) {
     chip.setAttribute("aria-pressed",
       String(chip.dataset.topo === roster.config.topology));
@@ -322,6 +360,7 @@ function renderGraph() {
       "data-seat": seat,
       "data-polarity": neuron.polarity ?? "excitatory",
       "data-myelin": neuron.myelinated === false ? "off" : "on",
+      "data-group": neuron.group ?? 1,
       transform: `translate(${x} ${y})`,
     });
     group.appendChild(make("circle", { r: 20, class: "node-ring" }));
@@ -379,6 +418,14 @@ for (const chip of document.querySelectorAll("[data-dil]")) {
     send({ type: "config", dilation: Number(chip.dataset.dil) }));
 }
 
+for (const chip of document.querySelectorAll("[data-groups]")) {
+  chip.addEventListener("click", () =>
+    send({ type: "config", groups: Number(chip.dataset.groups) }));
+}
+
+$("lock").addEventListener("click", () =>
+  send({ type: "config", locked: !roster.config.locked }));
+
 /* Un botón por neurona para invertir su polaridad. Se reconstruye con cada
    censo, ya que los asientos se dan de alta y baja durante la sesión. */
 function renderPolarityChips() {
@@ -391,16 +438,88 @@ function renderPolarityChips() {
     chip.dataset.polarity = neuron.polarity ?? "excitatory";
     chip.textContent = String(neuron.seat).padStart(2, "0");
     chip.title = neuron.polarity === "inhibitory" ? "inhibitoria" : "excitatoria";
+    chip.dataset.myelin = neuron.myelinated === false ? "off" : "on";
+    chip.title = `${neuron.polarity === "inhibitory" ? "inhibitoria" : "excitatoria"}`
+               + ` · ${neuron.myelinated === false ? "sin mielina" : "mielinizada"}`
+               + (roster.config.groups > 1 ? ` · circuito ${neuron.group === 2 ? "B" : "A"}` : "");
+
     chip.addEventListener("click", () => send({
       type: "polarity",
       seat: neuron.seat,
       kind: neuron.polarity === "inhibitory" ? "excitatory" : "inhibitory",
     }));
+
+    // Pulsación larga o clic derecho: alterna la mielina de ese asiento sin
+    // gastar un control aparte por cada neurona.
+    let timer = null;
+    const toggleMyelin = () => send({
+      type: "myelin", seat: neuron.seat, on: neuron.myelinated === false,
+    });
+    chip.addEventListener("contextmenu", e => { e.preventDefault(); toggleMyelin(); });
+    chip.addEventListener("pointerdown", () => { timer = setTimeout(toggleMyelin, 550); });
+    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
+      chip.addEventListener(ev, () => clearTimeout(timer));
+    }
     holder.appendChild(chip);
   }
 }
 
 $("reset").addEventListener("click", () => send({ type: "reset" }));
+
+/* ------------------------------------------------------------------ juegos -- */
+
+for (const chip of document.querySelectorAll("[data-game]")) {
+  chip.addEventListener("click", () =>
+    send({ type: "game", action: "start", kind: chip.dataset.game }));
+}
+$("gameStop").addEventListener("click", () => send({ type: "game", action: "stop" }));
+
+/**
+ * Pinta el medidor del juego.
+ *
+ * En sincronía el medidor es cuántas neuronas distintas han tocado dentro de
+ * la ventana, y la marca es el quórum: es la suma dentro de una ventana
+ * temporal, hecha visible. En el tirón el medidor es el potencial de la
+ * neurona compartida, entre el piso de hiperpolarización y el umbral.
+ */
+function renderGame(state) {
+  const panel = $("gamePanel");
+  for (const chip of document.querySelectorAll("[data-game]")) {
+    chip.setAttribute("aria-pressed", String(state?.kind === chip.dataset.game));
+  }
+  if (!state) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.dataset.kind = state.kind;
+
+  if (state.kind === "sync") {
+    const fraction = Math.min(1, state.in_window / Math.max(1, state.quorum));
+    $("gameTitle").textContent = "Toquen todos al mismo tiempo";
+    $("gaugeFill").style.width = `${fraction * 100}%`;
+    $("gaugeMark").style.left = "100%";
+    $("gameReadout").textContent =
+      `${state.in_window} de ${state.quorum} a la vez · disparos logrados: ${state.hits}`;
+  } else {
+    const span = state.threshold - state.floor;
+    const fraction = Math.min(1, Math.max(0, (state.v - state.floor) / span));
+    const restAt = (state.rest - state.floor) / span;
+    $("gameTitle").textContent = state.over
+      ? (state.winner === "excitatory" ? "¡Disparó! Ganó la excitación"
+                                       : "No disparó. Ganó la inhibición")
+      : "Excitación contra inhibición";
+    $("gaugeFill").style.width = `${fraction * 100}%`;
+    $("gaugeMark").style.left = `${restAt * 100}%`;
+    $("gameReadout").textContent = state.over
+      ? `potencial final ${state.v.toFixed(1)} mV`
+      : `${state.v.toFixed(1)} mV · umbral ${state.threshold} mV · quedan ${state.remaining_s.toFixed(0)} s`;
+  }
+}
+
+function flashGame(msg) {
+  const panel = $("gamePanel");
+  panel.classList.remove("burst");
+  void panel.getBoundingClientRect();   // reinicia la animación
+  panel.classList.add("burst");
+}
 
 const fullButton = $("full");
 if (document.documentElement.requestFullscreen) {
