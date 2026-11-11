@@ -401,16 +401,14 @@ function pulse(kind) {
 let game = null;
 
 function stimulate(x = null, y = null) {
-  if (game && !game.over) {
-    // Durante un juego cada persona es una entrada de la neurona compartida,
-    // no de la propia: se envía el toque y no se dispara localmente, para no
-    // desatar una avalancha en el circuito mientras todos tocan a la vez.
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "tap" }));
-    }
-  } else {
-    inject(config.weight);
+  // Todo toque se reporta: alimenta la onda de la sala en el mural.
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "tap" }));
   }
+  // Durante un juego cada persona es una entrada de la neurona compartida,
+  // no de la propia: no se dispara localmente, para no desatar una avalancha
+  // en el circuito mientras todos tocan a la vez.
+  if (!(game && !game.over)) inject(config.weight);
   ripple(x, y);
 }
 

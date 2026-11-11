@@ -715,6 +715,10 @@ class Hub:
             self.broadcast({"type": "reset"}, roles=("neuron",))
 
         elif kind == "tap" and client.role == "neuron":
+            # El toque se reenvía al mural haya juego o no: es la entrada
+            # sináptica con la que se construye la onda de la sala.
+            if client.seat is not None:
+                self.broadcast({"type": "tap", "seat": client.seat}, roles=("mural",))
             self.on_tap(client)
 
         elif kind == "game" and client.role == "mural":

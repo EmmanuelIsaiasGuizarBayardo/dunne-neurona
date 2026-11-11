@@ -202,6 +202,16 @@ async def main():
         for ws in (a, b, c, d, mural):
             await recv(ws, "welcome")
 
+        # El toque llega al mural aunque no haya juego, y no a las neuronas.
+        await a.send(json.dumps({"type": "tap"}))
+        t = await recv(mural, "tap", 4.0)
+        check("el toque llega al mural para construir la onda", t["seat"] == 1, t)
+        try:
+            await asyncio.wait_for(recv(b, "tap", 0.6), timeout=0.8)
+            check("el toque NO se difunde a las neuronas", False)
+        except (TimeoutError, asyncio.TimeoutError):
+            check("el toque NO se difunde a las neuronas", True)
+
         # Sincronía: con cuatro neuronas y quórum de 0.5 hacen falta dos.
         await mural.send(json.dumps({"type": "game", "action": "start", "kind": "sync"}))
         st = await recv_until(mural, "game", lambda m: m.get("state"), 4.0)

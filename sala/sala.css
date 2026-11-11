@@ -618,3 +618,35 @@ body.room[data-fire="on"] .mission{color:var(--flame)}
 @media (prefers-reduced-motion:reduce){
   .game-panel.burst{animation:none}
 }
+
+/* ============================================================ onda EEG ==
+   Banda superior del panel del raster. La escala es fija a propósito: un
+   pico de sincronía tiene que verse grande, no reescalarse para caber. */
+
+.raster-panel{grid-template-rows:auto auto minmax(0,1fr)}
+
+.eeg-band{display:grid;gap:6px}
+
+.eeg-label{
+  margin:0;
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--type);
+}
+.eeg-label .dim{margin-left:10px;letter-spacing:.1em;color:var(--whisper)}
+
+#eeg{
+  display:block;
+  width:100%;
+  height:clamp(90px,19vh,180px);
+}
+
+/* El panel del juego ahora cubre el grafo y deja libre la onda. */
+.graph-panel{position:relative}
+.graph-panel .game-panel{
+  inset:0;
+  background:linear-gradient(to bottom,var(--ink) 0%,var(--ink) 86%,rgba(11,18,24,0) 100%);
+}
+.graph-panel .game-title{font-size:clamp(1.4rem,2.8vw,2.4rem)}
