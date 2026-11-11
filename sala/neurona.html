@@ -103,6 +103,7 @@ let vm = V_REST;
 let refractoryUntil = 0;
 let simTime = 0;
 const history = [];
+const spikeMarks = [];      // instantes de disparo, en tiempo simulado
 
 /* --------------------------------------------------- datos de propagación -- */
 
@@ -227,8 +228,13 @@ function inject(weight, fromSeat = null) {
 }
 
 function fire() {
+  spikeMarks.push(simTime);
   vm = V_RESET;
   refractoryUntil = simTime + T_REFRAC;
+  // Respuesta de pantalla completa al disparo propio, más fuerte que la de
+  // una entrada: el potencial de acción es el evento, la entrada no.
+  document.body.dataset.spike = "on";
+  setTimeout(() => { delete document.body.dataset.spike; }, 380);
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "spike", at: Date.now() }));
   }
@@ -283,17 +289,39 @@ function colorOf(name) {
   return material;
 }
 
-/** Enciende un material en blanco y lo devuelve a su color. */
-function flash(name, ms = 260) {
+const fades = new Map();     // material → animación en curso
+
+/**
+ * Hace brillar un material y lo apaga gradualmente.
+ *
+ * Usa emisión en lugar de cambiar el color base: la estructura se enciende
+ * con luz propia y conserva su color didáctico. La caída es cuadrática, que
+ * se percibe como un destello y no como un parpadeo. Si el visor no expone la
+ * emisión, se recurre al destello en blanco.
+ */
+function flash(name, ms = 460) {
   const material = colorOf(name);
   if (!material) return;
-  const base = baseColors.get(name);
-  material.pbrMetallicRoughness.setBaseColorFactor([1, 1, 1, base[3]]);
-  setTimeout(() => {
-    // Si la mielina está apagada su color de reposo es el degradado, no el
-    // original: se recalcula en vez de restaurar a ciegas.
-    material.pbrMetallicRoughness.setBaseColorFactor(restingColor(name));
-  }, ms);
+
+  if (typeof material.setEmissiveFactor !== "function") {
+    const base = baseColors.get(name);
+    material.pbrMetallicRoughness.setBaseColorFactor([1, 1, 1, base[3]]);
+    setTimeout(() => material.pbrMetallicRoughness.setBaseColorFactor(restingColor(name)), ms);
+    return;
+  }
+
+  const glow = polarity === "inhibitory" ? [0.35, 0.85, 1.0] : [1.0, 0.5, 0.08];
+  const token = Symbol();
+  fades.set(name, token);
+  const start = performance.now();
+  (function step(now) {
+    if (fades.get(name) !== token) return;   // otro destello tomó el material
+    const k = Math.min(1, (now - start) / ms);
+    const e = (1 - k) ** 2;
+    material.setEmissiveFactor(glow.map(c => c * e));
+    if (k < 1) requestAnimationFrame(step);
+    else fades.delete(name);
+  })(start);
 }
 
 /** Color de reposo de un material, según el estado de la mielina. */
@@ -341,6 +369,7 @@ function loop(now) {
 
   history.push({ t: simTime, v: vm });
   while (history.length && history[0].t < simTime - WINDOW_MS) history.shift();
+  while (spikeMarks.length && spikeMarks[0] < simTime - WINDOW_MS) spikeMarks.shift();
 
   draw();
   $("vm").textContent = `${vm.toFixed(1)} mV`;
@@ -373,18 +402,39 @@ function draw() {
 
   if (history.length < 2) return;
 
-  ctx.strokeStyle = polarity === "inhibitory"
+  const accent = polarity === "inhibitory"
     ? pick("--cool", "#7de3ff") : pick("--flame", "#ff8419");
-  ctx.lineWidth = 2.5;
-  ctx.beginPath();
   const t0 = simTime - WINDOW_MS;
+  const xOf = t => ((t - t0) / WINDOW_MS) * width;
+
+  // El trazo subumbral, con un resplandor suave.
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  ctx.shadowColor = accent;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
   history.forEach((point, i) => {
-    const x = ((point.t - t0) / WINDOW_MS) * width;
-    const y = yOf(point.v);
+    const x = xOf(point.t), y = yOf(point.v);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+
+  // Los potenciales de acción. El modelo reinicia el voltaje al cruzar el
+  // umbral sin calcular la forma del disparo, así que sin esto el evento que
+  // se quiere enseñar sería invisible: solo se vería la caída. Se dibuja como
+  // una espiga vertical hasta el borde, que es como aparece en un registro.
+  ctx.lineWidth = 4;
+  ctx.shadowBlur = 18;
+  for (const t of spikeMarks) {
+    const x = xOf(t);
+    ctx.beginPath();
+    ctx.moveTo(x, yOf(V_TH));
+    ctx.lineTo(x, 0);
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
 }
 
 /* --------------------------------------------------------------- pulso UI -- */

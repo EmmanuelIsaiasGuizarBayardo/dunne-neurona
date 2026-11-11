@@ -653,3 +653,79 @@ body.room[data-fire="on"] .mission{color:var(--flame)}
   background:linear-gradient(to bottom,var(--ink) 0%,var(--ink) 80%,rgba(11,18,24,0) 100%);
 }
 .graph-panel .game-title{font-size:clamp(1.4rem,2.8vw,2.4rem)}
+
+/* ======================================================= ajuste dinámico ==
+   El mural debe caber completo en una ventana normal, sin pantalla completa
+   y sin barra de desplazamiento. Se logra por dos vías: la consola usa una
+   sola línea por bloque, y por debajo de ciertas alturas todo se compacta
+   por escalones. La zona central es minmax(0,1fr), así que absorbe lo que
+   sobre o lo que falte. */
+
+.console{align-items:center;row-gap:8px}
+.console-block{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.console-label{white-space:nowrap}
+.console-end{margin-left:auto}
+
+/* Área de toque del nodo, más grande que el nodo visible. */
+.node{cursor:pointer}
+.node-hit{fill:transparent;stroke:none}
+.node:hover .node-ring{opacity:1;stroke-width:2.5}
+
+@media (max-height:860px){
+  .wall-bar{padding-top:12px;padding-bottom:6px}
+  .wall-title{font-size:clamp(1.3rem,2.6vw,2.2rem)}
+  .console{padding-top:8px;padding-bottom:10px}
+  .chip{padding:6px 10px}
+  #eeg{height:clamp(70px,15vh,140px)}
+}
+
+@media (max-height:720px){
+  .wall-bar{padding-top:8px;padding-bottom:4px}
+  .wall-bar .kicker{display:none}
+  .wall-title{font-size:clamp(1.1rem,2vw,1.6rem)}
+  .vitals dd{font-size:clamp(13px,1.3vw,17px)}
+  .panel{gap:4px}
+  .console{padding-top:6px;padding-bottom:8px;gap:6px 16px}
+  .chip{padding:4px 8px;font-size:10px}
+  #eeg{height:clamp(56px,13vh,110px)}
+}
+
+@media (max-height:600px){
+  .wall-title{display:none}
+  .eeg-label .dim,.panel-title .dim{display:none}
+}
+
+/* ================================================ potenciales visibles ==
+   Más presencia para los eventos eléctricos, dentro del mismo lenguaje:
+   resplandor en lugar de color nuevo, y movimiento solo cuando ocurre algo. */
+
+.node.fire .node-ring{animation:burst-strong .75s ease-out}
+@keyframes burst-strong{
+  0%{r:20;opacity:1;stroke-width:5}
+  60%{opacity:.6}
+  100%{r:46;opacity:0;stroke-width:1}
+}
+.node.fire .node-core{filter:url(#glow)}
+
+.pulse{fill:var(--flame);filter:url(#glow)}
+.pulse[data-polarity="inhibitory"]{fill:var(--cool)}
+
+.edge.live{stroke-width:3.5;opacity:1;filter:url(#glow)}
+
+@media (prefers-reduced-motion:reduce){
+  .node.fire .node-ring{animation:none;opacity:1;stroke-width:4}
+}
+
+/* Disparo propio: un resplandor radial que nace del centro de la célula. */
+body.room[data-spike="on"]{
+  background:radial-gradient(70% 55% at 50% 38%,#4a2a0a 0%,var(--ink) 75%);
+}
+body.room[data-polarity="inhibitory"][data-spike="on"]{
+  background:radial-gradient(70% 55% at 50% 38%,#0c3442 0%,var(--ink) 75%);
+}
+.readout > span:first-child{transition:color .2s ease}
+body.room[data-spike="on"] .readout > span:first-child{color:var(--type)}

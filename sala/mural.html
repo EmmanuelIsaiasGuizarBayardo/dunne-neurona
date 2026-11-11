@@ -44,7 +44,7 @@
   <!-- Grafo del circuito. El relleno de cada nodo es su voltaje en vivo. -->
   <section class="panel graph-panel" aria-labelledby="graph-title">
     <h2 id="graph-title" class="panel-title">
-      Circuito <span class="dim">el relleno es el voltaje</span>
+      Circuito <span class="dim">toca un nodo: polaridad · mantenlo: mielina</span>
     </h2>
 <!-- Panel del juego: cubre el grafo, nunca la onda. -->
   <section class="game-panel" id="gamePanel" hidden aria-live="polite">
@@ -87,11 +87,6 @@
   </div>
 
   <div class="console-block">
-    <p class="console-label">Tipo · toca para polaridad, mantén para mielina</p>
-    <div class="chips" id="polChips"></div>
-  </div>
-
-  <div class="console-block">
     <p class="console-label">Juego colaborativo</p>
     <div class="chips">
       <button type="button" class="chip" data-game="sync">Sincronía</button>
@@ -123,7 +118,10 @@ const V_TH = -55;
 
 let roster = { neurons: [], edges: [], config: {} };
 const vms = new Map();         // asiento -> voltaje
-const spikes = [];             // {seat, t, polarity}
+const spikes = [];             // {seat, t, polarity}: potenciales de acción
+const taps = [];               // {seat, t}: entradas, también durante los juegos
+const sharedFires = [];        // {t}: disparos de la neurona compartida
+let gameActive = false;
 
 /* --------------------------------------------------------------- conexión -- */
 
@@ -146,14 +144,15 @@ socket.addEventListener("message", event => {
     for (const n of msg.neurons) if (n.vm != null) vms.set(n.seat, n.vm);
     renderVitals();
     renderGraph();
-    renderPolarityChips();
 
   } else if (msg.type === "game") {
-    if ("state" in msg) renderGame(msg.state);
+    if ("state" in msg) { renderGame(msg.state); gameActive = !!msg.state; }
+    if (msg.event === "fire") sharedFires.push({ t: performance.now() });
     if (msg.event) flashGame(msg);
 
   } else if (msg.type === "tap") {
     pendingTaps += 1;
+    taps.push({ seat: msg.seat, t: performance.now() });
 
   } else if (msg.type === "vm") {
     vms.set(msg.seat, msg.v);
@@ -161,7 +160,7 @@ socket.addEventListener("message", event => {
   } else if (msg.type === "event" && msg.kind === "spike") {
     spikes.push({ seat: msg.seat, t: performance.now(), polarity: msg.polarity });
     fireNode(msg.seat);
-    for (const target of msg.targets ?? []) travelEdge(msg.seat, target, msg.delay_ms);
+    for (const target of msg.targets ?? []) travelEdge(msg.seat, target, msg.delay_ms, msg.polarity);
   }
 });
 
@@ -216,9 +215,14 @@ function drawRaster() {
   rctx.clearRect(0, 0, width, height);
 
   const now = performance.now();
-  while (spikes.length && spikes[0].t < now - RASTER_WINDOW) spikes.shift();
+  for (const list of [spikes, taps, sharedFires]) {
+    while (list.length && list[0].t < now - RASTER_WINDOW) list.shift();
+  }
 
   const seats = roster.neurons.map(n => n.seat).filter(s => s != null);
+  // Durante un juego se reserva la primera fila para la neurona compartida.
+  const rows = gameActive ? ["shared", ...seats] : seats;
+  const xOf = t => gutter + ((t - (now - RASTER_WINDOW)) / RASTER_WINDOW) * (width - gutter);
   const gutter = 46;
   if (!seats.length) {
     rctx.fillStyle = pick("--whisper", "#5d7085");
@@ -227,7 +231,7 @@ function drawRaster() {
     return;
   }
 
-  const rowHeight = (height - 24) / seats.length;
+  const rowHeight = (height - 24) / rows.length;
 
   // Rejilla de tiempo cada cinco segundos, rotulada hacia atrás.
   rctx.strokeStyle = pick("--tint", "rgba(240,243,247,.06)");
@@ -243,8 +247,33 @@ function drawRaster() {
     if (seconds) rctx.fillText(`-${seconds}s`, x - 10, height - 5);
   }
 
+  // Fila de la neurona compartida: sus disparos son lo que el grupo logró.
+  if (gameActive) {
+    const y = 6 + rowHeight / 2;
+    rctx.fillStyle = pick("--flame", "#ff8419");
+    rctx.font = "bold 10px ui-monospace, monospace";
+    rctx.fillText("GRUPO", 2, y + 4);
+    rctx.strokeStyle = pick("--flame", "#ff8419");
+    rctx.globalAlpha = 0.25;
+    rctx.lineWidth = 1;
+    rctx.beginPath(); rctx.moveTo(gutter, y); rctx.lineTo(width, y); rctx.stroke();
+    rctx.globalAlpha = 1;
+    rctx.lineWidth = 4;
+    rctx.shadowColor = pick("--flame", "#ff8419");
+    rctx.shadowBlur = 14;
+    for (const fire of sharedFires) {
+      const x = xOf(fire.t);
+      rctx.beginPath();
+      rctx.moveTo(x, y - rowHeight * 0.45);
+      rctx.lineTo(x, y + rowHeight * 0.45);
+      rctx.stroke();
+    }
+    rctx.shadowBlur = 0;
+  }
+
   // Una fila por neurona: etiqueta, línea base y barra de voltaje.
-  seats.forEach((seat, index) => {
+  seats.forEach((seat, seatIndex) => {
+    const index = gameActive ? seatIndex + 1 : seatIndex;
     const y = 6 + index * rowHeight + rowHeight / 2;
     const neuron = roster.neurons.find(n => n.seat === seat) ?? {};
     const inhibitory = neuron.polarity === "inhibitory";
@@ -268,17 +297,37 @@ function drawRaster() {
     rctx.lineTo(width, y);
     rctx.stroke();
 
+    // Entradas: marcas cortas. Cuando el grupo se sincroniza, las marcas de
+    // todas las filas se alinean en una columna vertical, que es como se
+    // reconoce la sincronía en un raster real.
+    const tapTick = Math.min(rowHeight * 0.22, 9);
     rctx.strokeStyle = accent;
-    rctx.lineWidth = 2.5;
-    for (const spike of spikes) {
-      if (spike.seat !== seat) continue;
-      const x = gutter + ((spike.t - (now - RASTER_WINDOW)) / RASTER_WINDOW) * (width - gutter);
-      const tick = Math.min(rowHeight * 0.34, 14);
+    rctx.globalAlpha = 0.6;
+    rctx.lineWidth = 2;
+    for (const tap of taps) {
+      if (tap.seat !== seat) continue;
+      const x = xOf(tap.t);
       rctx.beginPath();
-      rctx.moveTo(x, y - tick);
-      rctx.lineTo(x, y + tick);
+      rctx.moveTo(x, y - tapTick);
+      rctx.lineTo(x, y + tapTick);
       rctx.stroke();
     }
+    rctx.globalAlpha = 1;
+
+    // Potenciales de acción: marcas altas y con resplandor.
+    const spikeTick = Math.min(rowHeight * 0.44, 18);
+    rctx.lineWidth = 3.5;
+    rctx.shadowColor = accent;
+    rctx.shadowBlur = 10;
+    for (const spike of spikes) {
+      if (spike.seat !== seat) continue;
+      const x = xOf(spike.t);
+      rctx.beginPath();
+      rctx.moveTo(x, y - spikeTick);
+      rctx.lineTo(x, y + spikeTick);
+      rctx.stroke();
+    }
+    rctx.shadowBlur = 0;
   });
 
   // Borde derecho: el ahora.
@@ -456,6 +505,15 @@ function renderGraph() {
   });
   marker.appendChild(make("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "arrow-head" }));
   defs.appendChild(marker);
+
+  // Resplandor para los eventos eléctricos: pulso viajero y núcleo que dispara.
+  const glow = make("filter", { id: "glow", x: "-80%", y: "-80%", width: "260%", height: "260%" });
+  glow.appendChild(make("feGaussianBlur", { stdDeviation: "3.5", result: "blur" }));
+  const merge = make("feMerge");
+  merge.appendChild(make("feMergeNode", { in: "blur" }));
+  merge.appendChild(make("feMergeNode", { in: "SourceGraphic" }));
+  glow.appendChild(merge);
+  defs.appendChild(glow);
   graph.appendChild(defs);
 
   for (const [from, to] of roster.edges ?? []) {
@@ -484,11 +542,13 @@ function renderGraph() {
       "data-group": neuron.group ?? 1,
       transform: `translate(${x} ${y})`,
     });
+    group.appendChild(make("circle", { r: 26, class: "node-hit" }));
     group.appendChild(make("circle", { r: 20, class: "node-ring" }));
     group.appendChild(make("circle", { r: 4, class: "node-core" }));
     const label = make("text", { y: 36, class: "node-label" });
     label.textContent = String(seat).padStart(2, "0");
     group.appendChild(label);
+    attachNodeControl(group, neuron);
     graph.appendChild(group);
   }
 
@@ -505,6 +565,43 @@ function updateCores() {
   }
 }
 
+/**
+ * El tipo de cada neurona se cambia tocando su nodo en el grafo.
+ *
+ * Toque corto: invierte la polaridad. Pulsación larga o clic derecho:
+ * alterna la mielina. Antes había un botón por asiento en la consola, que con
+ * 40 personas ocupaba varias filas y empujaba los demás controles fuera de la
+ * pantalla.
+ */
+function attachNodeControl(group, neuron) {
+  let timer = null;
+  let longPress = false;
+  const toggleMyelin = () => {
+    longPress = true;
+    send({ type: "myelin", seat: neuron.seat, on: neuron.myelinated === false });
+  };
+  group.addEventListener("pointerdown", () => {
+    longPress = false;
+    timer = setTimeout(toggleMyelin, 550);
+  });
+  for (const ev of ["pointerleave", "pointercancel"]) {
+    group.addEventListener(ev, () => clearTimeout(timer));
+  }
+  group.addEventListener("pointerup", () => {
+    clearTimeout(timer);
+    if (longPress) return;
+    send({
+      type: "polarity", seat: neuron.seat,
+      kind: neuron.polarity === "inhibitory" ? "excitatory" : "inhibitory",
+    });
+  });
+  group.addEventListener("contextmenu", event => {
+    event.preventDefault();
+    clearTimeout(timer);
+    toggleMyelin();
+  });
+}
+
 function fireNode(seat) {
   const group = graph.querySelector(`.node[data-seat="${seat}"]`);
   if (!group) return;
@@ -514,12 +611,31 @@ function fireNode(seat) {
   setTimeout(() => group.classList.remove("fire"), 620);
 }
 
-/** Marca la arista mientras el potencial viaja por ella. */
-function travelEdge(from, to, delayMs) {
+/**
+ * Hace viajar un pulso luminoso por la arista durante el retardo de
+ * conducción. Sin mielina el retardo es diez veces mayor, y el pulso avanza
+ * visiblemente más despacio: la diferencia se ve sin explicarla.
+ */
+function travelEdge(from, to, delayMs, polarity) {
   const line = graph.querySelector(`[data-edge="${from}-${to}"]`);
   if (!line) return;
+  const x1 = +line.getAttribute("x1"), y1 = +line.getAttribute("y1");
+  const x2 = +line.getAttribute("x2"), y2 = +line.getAttribute("y2");
+  const duration = Math.max(delayMs ?? 200, 160);
+
   line.classList.add("live");
-  setTimeout(() => line.classList.remove("live"), Math.max(delayMs ?? 200, 160));
+  const dot = make("circle", { r: 6, class: "pulse", cx: x1, cy: y1 });
+  if (polarity) dot.dataset.polarity = polarity;
+  graph.appendChild(dot);
+
+  const start = performance.now();
+  (function step(now) {
+    const k = Math.min(1, (now - start) / duration);
+    dot.setAttribute("cx", x1 + (x2 - x1) * k);
+    dot.setAttribute("cy", y1 + (y2 - y1) * k);
+    if (k < 1) requestAnimationFrame(step);
+    else { dot.remove(); line.classList.remove("live"); }
+  })(start);
 }
 
 /* ---------------------------------------------------------------- consola -- */
@@ -546,44 +662,6 @@ for (const chip of document.querySelectorAll("[data-groups]")) {
 
 $("lock").addEventListener("click", () =>
   send({ type: "config", locked: !roster.config.locked }));
-
-/* Un botón por neurona para invertir su polaridad. Se reconstruye con cada
-   censo, ya que los asientos se dan de alta y baja durante la sesión. */
-function renderPolarityChips() {
-  const holder = $("polChips");
-  holder.textContent = "";
-  for (const neuron of roster.neurons) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip chip-seat";
-    chip.dataset.polarity = neuron.polarity ?? "excitatory";
-    chip.textContent = String(neuron.seat).padStart(2, "0");
-    chip.title = neuron.polarity === "inhibitory" ? "inhibitoria" : "excitatoria";
-    chip.dataset.myelin = neuron.myelinated === false ? "off" : "on";
-    chip.title = `${neuron.polarity === "inhibitory" ? "inhibitoria" : "excitatoria"}`
-               + ` · ${neuron.myelinated === false ? "sin mielina" : "mielinizada"}`
-               + (roster.config.groups > 1 ? ` · circuito ${neuron.group === 2 ? "B" : "A"}` : "");
-
-    chip.addEventListener("click", () => send({
-      type: "polarity",
-      seat: neuron.seat,
-      kind: neuron.polarity === "inhibitory" ? "excitatory" : "inhibitory",
-    }));
-
-    // Pulsación larga o clic derecho: alterna la mielina de ese asiento sin
-    // gastar un control aparte por cada neurona.
-    let timer = null;
-    const toggleMyelin = () => send({
-      type: "myelin", seat: neuron.seat, on: neuron.myelinated === false,
-    });
-    chip.addEventListener("contextmenu", e => { e.preventDefault(); toggleMyelin(); });
-    chip.addEventListener("pointerdown", () => { timer = setTimeout(toggleMyelin, 550); });
-    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) {
-      chip.addEventListener(ev, () => clearTimeout(timer));
-    }
-    holder.appendChild(chip);
-  }
-}
 
 $("reset").addEventListener("click", () => send({ type: "reset" }));
 

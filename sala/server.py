@@ -48,6 +48,9 @@ import base64
 import hashlib
 import json
 import math
+import os
+import subprocess
+import sys
 from collections import deque
 import socket
 import struct
@@ -832,6 +835,57 @@ class RoomHandler(SimpleHTTPRequestHandler):
 # Arranque
 # ---------------------------------------------------------------------------
 
+def network_warnings(port: int) -> list[str]:
+    """Detecta en Windows lo que impide que otros dispositivos se conecten.
+
+    El síntoma de estos problemas es engañoso: el servidor arranca bien y
+    responde desde la propia laptop, pero los teléfonos nunca llegan. El
+    registro del servidor solo muestra conexiones de la IP local.
+
+    Returns
+    -------
+    list of str
+        Advertencias con el comando que las resuelve; vacía si todo está bien
+        o si no se está en Windows.
+    """
+    if os.name != "nt":
+        return []
+    warnings: list[str] = []
+
+    # Regla de firewall por puerto. Las reglas por programa no bastan: el
+    # Python de un entorno virtual es un ejecutable distinto del Python del
+    # sistema, y el permiso concedido a uno no cubre al otro.
+    try:
+        rule = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule", "name=Sala DUNNE"],
+            capture_output=True, text=True, timeout=6)
+        if rule.returncode != 0:
+            warnings.append(
+                "No existe la regla de firewall 'Sala DUNNE'. Los teléfonos no podrán "
+                "conectarse. En una terminal como administrador:\n"
+                f'    netsh advfirewall firewall add rule name="Sala DUNNE" dir=in '
+                f"action=allow protocol=TCP localport={port}")
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    # Perfil de red. En una red marcada como pública, Windows bloquea casi
+    # toda conexión entrante aunque exista la regla.
+    try:
+        profile = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-NetConnectionProfile | Select-Object -First 1).NetworkCategory"],
+            capture_output=True, text=True, timeout=8)
+        if profile.stdout.strip().lower() == "public":
+            warnings.append(
+                "La red está marcada como Pública. Cámbiala a Privada en la "
+                "configuración de wifi, o como administrador:\n"
+                "    Set-NetConnectionProfile -NetworkCategory Private")
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return warnings
+
+
 def local_ips() -> list[str]:
     """Direcciones IPv4 locales plausibles para compartir en la sala."""
     found: list[str] = []
@@ -889,6 +943,9 @@ def main() -> int:
     for ip in local_ips():
         print(f"  neuronas → http://{ip}:{args.port}/n")
         print(f"  mural    → http://{ip}:{args.port}/m")
+    for warning in network_warnings(args.port):
+        print(f"\nAVISO · {warning}")
+    print(f"\nPython en uso: {sys.executable}")
     print("Ctrl+C para detener.")
 
     try:
