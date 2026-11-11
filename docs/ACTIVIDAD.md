@@ -77,7 +77,17 @@ El primer intento casi nunca sale. No hay que ayudar todavía.
 
 ### 4:30 · El descubrimiento
 
-Alguien propone contar. Si nadie lo propone en un minuto, quien narra pregunta:
+Lo primero que casi todos intentan es tocar sin parar. **No funciona, y es a
+propósito**: cada tablet muestra una barra, *tu sinapsis*, que se vacía con
+cada toque y solo se recupera al esperar. El mural muestra cuántas personas
+están tocando y cuánto valen en realidad: pueden ser treinta tocando que entre
+todas valen dos.
+
+> Están tocando mucho, pero sus sinapsis se cansaron. Así les pasa a las
+> neuronas de verdad cuando se las estimula sin descanso.
+
+Alguien propone esperar y contar. Si nadie lo propone en un minuto, quien
+narra pregunta:
 
 > ¿Qué necesitan para tocar todos al mismo tiempo?
 
@@ -175,9 +185,30 @@ la cantidad necesaria para producir una señal detectable es muchísimo mayor qu
 cuarenta. El principio, que solo la actividad sincrónica es visible desde
 fuera, se sostiene.
 
+**Por qué tocar sin parar no sirve.** Cada toque gasta una parte de los
+recursos de la sinapsis, que se recuperan en unos segundos. Es la depresión
+sináptica a corto plazo: con estimulación repetida, el botón sináptico se queda
+sin vesículas listas para liberar y cada estímulo produce menos efecto. Tsodyks
+y Markram (1997) mostraron que cuando esta depresión es rápida, la neurona
+postsináptica deja de responder a cuánto disparan sus entradas y responde a qué
+tan sincronizadas llegan. Es exactamente lo que el juego exige.
+
+Medido con el servidor real y 40 participantes durante un minuto: con la regla
+anterior, tocar sin parar lograba 62 disparos y la cuenta regresiva solo 15;
+con la depresión, tocar sin parar logra uno, el inicial, y la cuenta regresiva
+conserva sus 15. Cinco personas que no paran no arruinan el esfuerzo de las
+otras 35, pero si la mitad del salón no coopera, no se logra.
+
 **Si el primer intento sale bien a la primera**, el grupo es especialmente
 coordinado o alguien ya conocía la dinámica. Conviene subir el reto pidiendo
 que lo logren sin contar en voz alta.
+
+### Referencia
+
+Tsodyks, M. V., & Markram, H. (1997). The neural code between neocortical
+pyramidal neurons depends on neurotransmitter release probability.
+*Proceedings of the National Academy of Sciences, 94*(2), 719–723.
+https://doi.org/10.1073/pnas.94.2.719
 
 ---
 

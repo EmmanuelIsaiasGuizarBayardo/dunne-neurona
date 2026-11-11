@@ -312,6 +312,46 @@ async def main():
         await mural.send(json.dumps({"type": "game", "action": "stop"}))
         await recv_until(mural, "game", lambda m: m.get("state") is None, 4.0)
 
+        # Quien se conecta a media partida recibe el juego en curso.
+        await mural.send(json.dumps({"type": "game", "action": "start", "kind": "sync"}))
+        await recv_until(mural, "game", lambda m: m.get("state"), 4.0)
+        async with websockets.connect(URL) as tarde:
+            st = await recv_until(tarde, "game", lambda m: m.get("state"), 4.0)
+            check("quien llega a media partida recibe el juego en curso",
+                  st["state"]["kind"] == "sync", st["state"])
+        await mural.send(json.dumps({"type": "game", "action": "stop"}))
+        await recv_until(mural, "game", lambda m: m.get("state") is None, 4.0)
+
+        # Depresión sináptica: tocar sin parar no logra disparos repetidos.
+        await mural.send(json.dumps({"type": "game", "action": "start", "kind": "sync"}))
+        await recv_until(mural, "game", lambda m: m.get("state"), 4.0)
+        for _ in range(24):                       # unos dos segundos de spam
+            for ws in (a, b, c):
+                await ws.send(json.dumps({"type": "tap"}))
+            await asyncio.sleep(0.08)
+        # Se drena la cola completa y se toma el último estado: el primero de
+        # la cola es del inicio del spam y no refleja el resultado.
+        st = None
+        while True:
+            try:
+                m = json.loads(await asyncio.wait_for(mural.recv(), timeout=0.5))
+            except (TimeoutError, asyncio.TimeoutError):
+                break
+            if m.get("type") == "game" and m.get("state"):
+                st = m
+        check("tocar sin parar solo logra el disparo inicial",
+              st["state"]["hits"] == 1, st["state"])
+
+        # Tras descansar, la sinapsis se recupera y la coordinación funciona.
+        await asyncio.sleep(3.5)
+        for ws in (a, b, c):
+            await ws.send(json.dumps({"type": "tap"}))
+        fire = await recv_until(mural, "game", lambda m: m.get("event") == "fire", 4.0)
+        check("después de descansar, tocar juntos vuelve a disparar", fire["kind"] == "sync")
+
+        await mural.send(json.dumps({"type": "game", "action": "stop"}))
+        await recv_until(mural, "game", lambda m: m.get("state") is None, 4.0)
+
         # Tirón: dos excitatorias contra dos inhibitorias.
         await mural.send(json.dumps({"type": "game", "action": "start", "kind": "tug",
                                      "duration_s": 30, "step_mv": 3.0, "max_rate_hz": 3}))

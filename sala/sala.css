@@ -801,3 +801,43 @@ body.wall[data-editing="on"] #graph-title .dim{color:var(--flame)}
   opacity:1;
   filter:url(#glow);
 }
+
+/* ===================================================== sinapsis propia ==
+   Barra del recurso sináptico durante la sincronía. Se vacía con cada toque
+   y se llena sola al esperar: la regla del juego, sentida en la mano. */
+
+.synapse{
+  position:absolute;
+  top:clamp(40px,7vh,58px);
+  left:50%;
+  transform:translateX(-50%);
+  z-index:4;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  pointer-events:none;
+}
+.synapse[hidden]{display:none}
+.synapse-label{
+  white-space:nowrap;
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--murmur);
+}
+.synapse-track{
+  width:clamp(120px,40vw,220px);
+  height:8px;
+  background:var(--tint);
+  overflow:hidden;
+}
+.synapse-fill{
+  display:block;
+  height:100%;
+  width:100%;
+  background:var(--flame);
+  box-shadow:0 0 10px var(--flame);
+}
+/* Agotada: se apaga el resplandor, para que se note sin leer el número. */
+.synapse-fill[data-low="on"]{background:var(--whisper);box-shadow:none}

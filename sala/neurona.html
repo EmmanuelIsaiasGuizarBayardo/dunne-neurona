@@ -30,6 +30,12 @@
   <!-- Indicaciones del juego en curso. Fuera del juego no se muestra. -->
   <p class="mission" id="mission" hidden></p>
 
+  <!-- Recurso de la sinapsis propia durante la sincronía. -->
+  <div class="synapse" id="synapse" hidden>
+    <span class="synapse-label">tu sinapsis</span>
+    <span class="synapse-track"><span class="synapse-fill" id="synapseFill"></span></span>
+  </div>
+
   <model-viewer class="cell-model" id="viewer"
     src="./assets/Neurona_sala.glb"
     alt="Modelo de una motoneurona: soma naranja, dendritas azules, axón verde con cuatro vainas de mielina amarillas."
@@ -388,6 +394,7 @@ function loop(now) {
   while (spikeMarks.length && spikeMarks[0] < simTime - windowMs()) spikeMarks.shift();
 
   draw();
+  drawSynapse(now);
   $("vm").textContent = `${vm.toFixed(1)} mV`;
   requestAnimationFrame(loop);
 }
@@ -493,7 +500,33 @@ function pulse(kind) {
    explorarla puede hacerlo sin dispararla. */
 let game = null;
 
+/* Espejo local de la depresión sináptica del servidor. El servidor decide;
+   la tablet solo muestra el recurso propio para que cada persona vea que
+   tocar sin parar la agota y que esperar la recupera. Mismo modelo y mismos
+   parámetros, que llegan en el estado del juego. */
+const synapse = { r: 1, t: performance.now() };
+
+function synapseAvailable(now) {
+  const tau = game?.recovery_ms ?? 2500;
+  return 1 - (1 - synapse.r) * Math.exp(-(now - synapse.t) / tau);
+}
+
+function spendSynapse() {
+  const now = performance.now();
+  synapse.r = synapseAvailable(now) * (1 - (game?.use ?? 0.7));
+  synapse.t = now;
+}
+
+function drawSynapse(now) {
+  if (!game || game.kind !== "sync" || game.over) return;
+  const value = synapseAvailable(now);
+  const fill = $("synapseFill");
+  fill.style.width = `${(value * 100).toFixed(1)}%`;
+  fill.dataset.low = value < 0.35 ? "on" : "";
+}
+
 function stimulate(x = null, y = null) {
+  if (game?.kind === "sync" && !game.over) spendSynapse();
   // Todo toque se reporta: alimenta la onda de la sala en el mural.
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "tap" }));
@@ -554,6 +587,7 @@ const MISSION = {
 
 function setGame(state) {
   game = state;
+  $("synapse").hidden = !(state && state.kind === "sync" && !state.over);
   const mission = $("mission");
   if (!state) {
     mission.hidden = true;

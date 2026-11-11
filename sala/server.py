@@ -126,7 +126,15 @@ GAME_DEFAULTS: dict[str, dict[str, float]] = {
     # Detección de coincidencias: la neurona compartida dispara solo si una
     # fracción del grupo toca dentro de la misma ventana breve. No se gana con
     # velocidad sino con coordinación.
-    "sync": {"window_ms": 500.0, "quorum": 0.5, "refractory_ms": 900.0},
+    #
+    # Cada sinapsis sufre depresión a corto plazo: un toque gasta una fracción
+    # de sus recursos (`use`) y estos se recuperan con constante de tiempo
+    # `recovery_ms`. Un toque descansado vale 1; tocar sin parar agota la
+    # sinapsis y cada toque vale casi nada. Sin esto, cuarenta personas
+    # tocando sin pausa llenan cualquier ventana de medio segundo y el quórum
+    # se cumple sin que nadie se ponga de acuerdo.
+    "sync": {"window_ms": 500.0, "quorum": 0.5, "refractory_ms": 900.0,
+             "use": 0.7, "recovery_ms": 2500.0},
 
     # Suma de excitación contra inhibición. El tope de toques por persona
     # hace que gane el equipo donde más gente participa, no donde alguien
@@ -327,6 +335,11 @@ class Hub:
             "targets": self.targets_of(client.seat) if client.seat else [],
         })
         self.broadcast_roster()
+        # Quien llega a media partida, por una reconexión o una recarga, debe
+        # enterarse del juego en curso; si no, su pantalla no lo mostraría
+        # hasta que alguien más tocara.
+        if self.game is not None:
+            client.send({"type": "game", "state": self.game_state()})
         self.log(f"entra {role} cid={cid} asiento={client.seat}")
         return client
 
@@ -583,7 +596,7 @@ class Hub:
         with self._lock:
             self.game = {
                 "kind": kind, "settings": settings, "started": time.time(),
-                "taps": deque(), "rate": {}, "v": V_REST, "hits": 0,
+                "taps": deque(), "rate": {}, "synapse": {}, "v": V_REST, "hits": 0,
                 "quiet_until": 0.0, "count": {"excitatory": 0, "inhibitory": 0},
                 "over": False, "winner": None,
             }
@@ -610,15 +623,18 @@ class Hub:
             now = time.time()
 
             if game["kind"] == "sync":
+                weight = self._deplete(game, client.seat, now)
+                # La sinapsis se agota con cada toque aunque la neurona
+                # compartida esté en su periodo refractario: el gasto ocurre
+                # en el botón presináptico, no en el destino.
                 if now < game["quiet_until"]:
                     return
                 window = game["settings"]["window_ms"] / 1000.0
-                game["taps"].append((now, client.seat))
+                game["taps"].append((now, client.seat, weight))
                 while game["taps"] and now - game["taps"][0][0] > window:
                     game["taps"].popleft()
-                distinct = len({seat for _, seat in game["taps"]})
                 needed = self.quorum(game)
-                fired = distinct >= needed
+                fired = self._effective(game) >= needed
                 if fired:
                     game["hits"] += 1
                     game["taps"].clear()
@@ -644,6 +660,41 @@ class Hub:
             self.broadcast({"type": "game", "event": "fire",
                             "kind": game["kind"], "winner": game.get("winner")})
         self.broadcast_game()
+
+    @staticmethod
+    def _deplete(game: dict[str, Any], seat: int, now: float) -> float:
+        """Aplica depresión sináptica al toque de un asiento.
+
+        Modelo de recursos con recuperación exponencial, en la línea de
+        Tsodyks y Markram (1997): entre toques, el recurso se recupera hacia 1
+        con constante `recovery_ms`; cada toque aporta el recurso disponible y
+        consume la fracción `use`.
+
+        Returns
+        -------
+        float
+            Peso de este toque, entre 0 y 1.
+        """
+        settings = game["settings"]
+        state = game["synapse"].setdefault(seat, {"r": 1.0, "t": now})
+        tau = settings["recovery_ms"] / 1000.0
+        available = 1.0 - (1.0 - state["r"]) * math.exp(-(now - state["t"]) / tau)
+        state["r"] = available * (1.0 - settings["use"])
+        state["t"] = now
+        return available
+
+    @staticmethod
+    def _effective(game: dict[str, Any]) -> float:
+        """Suma efectiva de la ventana: el mejor toque de cada asiento.
+
+        Se toma un toque por asiento para que nadie acumule varios toques
+        pequeños; y se usa su peso, no su existencia, para que una sinapsis
+        agotada cuente poco aunque haya tocado.
+        """
+        best: dict[int, float] = {}
+        for _, seat, weight in game["taps"]:
+            best[seat] = max(best.get(seat, 0.0), weight)
+        return sum(best.values())
 
     def quorum(self, game: dict[str, Any]) -> int:
         """Número de neuronas distintas que deben coincidir en la ventana."""
@@ -682,9 +733,12 @@ class Hub:
                      "winner": game["winner"]}
             if game["kind"] == "sync":
                 state.update({
-                    "in_window": len({seat for _, seat in game["taps"]}),
+                    "in_window": len({seat for _, seat, _ in game["taps"]}),
+                    "effective": round(self._effective(game), 2),
                     "quorum": self.quorum(game), "hits": game["hits"],
                     "window_ms": game["settings"]["window_ms"],
+                    "use": game["settings"]["use"],
+                    "recovery_ms": game["settings"]["recovery_ms"],
                 })
             else:
                 elapsed = time.time() - game["started"]
