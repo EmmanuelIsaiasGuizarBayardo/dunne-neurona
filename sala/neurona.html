@@ -311,6 +311,18 @@ function flash(name, ms = 460) {
   }
 
   const glow = polarity === "inhibitory" ? [0.35, 0.85, 1.0] : [1.0, 0.5, 0.08];
+
+  // Los colores claros (vainas amarillas, botones verde limón) se saturan a
+  // blanco si reciben el mismo brillo que los oscuros. La intensidad se
+  // escala por la luminancia del color base, calculada en espacio lineal,
+  // que es en el que glTF guarda baseColorFactor.
+  const [r, g, b] = baseColors.get(name) ?? [0.5, 0.5, 0.5];
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const room = Math.max(0.25, 1 - 0.75 * luminance);
+  // En computadora la pantalla es más grande y más brillante, y el mismo
+  // destello que en tableta resulta molesto.
+  const peak = matchMedia("(pointer: fine)").matches ? 0.5 : 0.85;
+  const scale = room * peak;
   const token = Symbol();
   fades.set(name, token);
   const start = performance.now();
@@ -318,7 +330,7 @@ function flash(name, ms = 460) {
     if (fades.get(name) !== token) return;   // otro destello tomó el material
     const k = Math.min(1, (now - start) / ms);
     const e = (1 - k) ** 2;
-    material.setEmissiveFactor(glow.map(c => c * e));
+    material.setEmissiveFactor(glow.map(c => c * e * scale));
     if (k < 1) requestAnimationFrame(step);
     else fades.delete(name);
   })(start);
@@ -348,7 +360,11 @@ function paintMyelin() {
 
 const canvas = $("trace");
 const ctx = canvas.getContext("2d");
-const WINDOW_MS = 2500;
+// La ventana visible se define en tiempo de reloj y no simulado. Antes eran
+// 2,500 ms simulados, que con dilatación ×20 son 50 s reales: cada potencial
+// postsináptico ocupaba menos del 1% del ancho y la suma temporal no se veía.
+const WALL_WINDOW_MS = 6000;
+const windowMs = () => WALL_WINDOW_MS / config.dilation;
 let lastFrame = performance.now();
 
 function loop(now) {
@@ -368,8 +384,8 @@ function loop(now) {
   }
 
   history.push({ t: simTime, v: vm });
-  while (history.length && history[0].t < simTime - WINDOW_MS) history.shift();
-  while (spikeMarks.length && spikeMarks[0] < simTime - WINDOW_MS) spikeMarks.shift();
+  while (history.length && history[0].t < simTime - windowMs()) history.shift();
+  while (spikeMarks.length && spikeMarks[0] < simTime - windowMs()) spikeMarks.shift();
 
   draw();
   $("vm").textContent = `${vm.toFixed(1)} mV`;
@@ -379,9 +395,15 @@ function loop(now) {
 const styles = getComputedStyle(document.documentElement);
 const pick = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
 
+// La parte superior del lienzo es una franja propia para los disparos, como
+// un pequeño raster; el voltaje ocupa el resto. Separados, el disparo no se
+// confunde con la curva de la membrana.
+const STRIP = 0.2;
+
 function yOf(v) {
   const top = -40, bottom = -90;
-  return canvas.height - ((v - bottom) / (top - bottom)) * canvas.height;
+  const area = canvas.height * (1 - STRIP) - 6;
+  return canvas.height - ((v - bottom) / (top - bottom)) * area;
 }
 
 function draw() {
@@ -404,8 +426,8 @@ function draw() {
 
   const accent = polarity === "inhibitory"
     ? pick("--cool", "#7de3ff") : pick("--flame", "#ff8419");
-  const t0 = simTime - WINDOW_MS;
-  const xOf = t => ((t - t0) / WINDOW_MS) * width;
+  const t0 = simTime - windowMs();
+  const xOf = t => ((t - t0) / windowMs()) * width;
 
   // El trazo subumbral, con un resplandor suave.
   ctx.strokeStyle = accent;
@@ -421,17 +443,33 @@ function draw() {
   });
   ctx.stroke();
 
-  // Los potenciales de acción. El modelo reinicia el voltaje al cruzar el
-  // umbral sin calcular la forma del disparo, así que sin esto el evento que
-  // se quiere enseñar sería invisible: solo se vería la caída. Se dibuja como
-  // una espiga vertical hasta el borde, que es como aparece en un registro.
-  ctx.lineWidth = 4;
-  ctx.shadowBlur = 18;
+  // Franja de disparos. El modelo reinicia el voltaje al cruzar el umbral sin
+  // calcular la forma del potencial de acción, así que sin esta franja el
+  // evento que se quiere enseñar sería invisible.
+  const stripH = canvas.height * STRIP;
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = pick("--whisper", "#5d7085");
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, stripH / 2);
+  ctx.lineTo(width, stripH / 2);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = pick("--whisper", "#5d7085");
+  ctx.font = "15px ui-monospace, monospace";
+  ctx.fillText("DISPAROS", 6, 16);
+
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = accent;
+  ctx.shadowBlur = 12;
   for (const t of spikeMarks) {
     const x = xOf(t);
     ctx.beginPath();
-    ctx.moveTo(x, yOf(V_TH));
-    ctx.lineTo(x, 0);
+    ctx.moveTo(x, stripH * 0.2);
+    ctx.lineTo(x, stripH * 0.8);
     ctx.stroke();
   }
   ctx.shadowBlur = 0;

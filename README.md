@@ -1,7 +1,7 @@
 # Neurona AR · DUNNE
 
 Material didáctico interactivo de la División Universitaria de Neuroingeniería
-(DUNNE), Facultad de Ingeniería, UNAM.
+(DUNNE), Facultad de Medicina, UNAM.
 
 Una motoneurona en 3D y realidad aumentada, sin instalar nada, y una sala
 interactiva donde cada dispositivo del público es una neurona de un circuito
@@ -119,7 +119,7 @@ y las direcciones IP antes de levantar el servidor.
 Opciones:
 
 ```bash
-python server.py --port 8000 --host 0.0.0.0 --topology convergencia --dilation 30
+python server.py --port 8000 --host 0.0.0.0 --topology organica --dilation 30
 ```
 
 Rutas: `/n` es alias de `neurona.html` y `/m` de `mural.html`. Existen para
@@ -164,8 +164,12 @@ Parámetros de conexión: `/ws?role=mural` para una pantalla de monitoreo,
 | `{"type":"vm","v":-62.4}` | reporta el voltaje actual; se propaga solo a los murales |
 | `{"type":"myelin","on":false}` | activa o desactiva la mielina de esa neurona |
 | `{"type":"polarity","kind":"inhibitory"}` | cambia la polaridad; desde un mural admite `"seat"` |
-| `{"type":"config","topology":"anillo","dilation":30}` | cambia la configuración global |
+| `{"type":"config","topology":"anillo","dilation":30}` | cambia la configuración global; admite `fan`, `groups` y `locked` |
 | `{"type":"reset"}` | reinicia el voltaje de todas las neuronas |
+| `{"type":"edge","from":1,"to":4}` | desde un mural: agrega o quita esa conexión y pasa a modo manual |
+| `{"type":"edges","op":"clear"}` | desde un mural: elimina todas las conexiones |
+| `{"type":"tap"}` | toque sobre la neurona; alimenta la onda del mural y los juegos |
+| `{"type":"game","action":"start","kind":"sync"}` | desde un mural: inicia un juego (`sync` o `tug`); `"stop"` lo detiene |
 
 ### Servidor al cliente
 
@@ -177,6 +181,9 @@ Parámetros de conexión: `/ws?role=mural` para una pantalla de monitoreo,
 | `roster` | `neurons`, `edges`, `config` |
 | `event` | spike observado: `seat`, `targets`, `delay_ms`, `polarity` |
 | `vm` | voltaje de un asiento; solo a los murales |
+| `tap` | toque de un asiento; solo a los murales |
+| `game` | estado del juego en curso, o `null` |
+| `notice` | aviso al mural cuando se rechaza una edición |
 
 ---
 
@@ -367,15 +374,14 @@ ciclos de vida distintos y no deben acoplarse.
 ## Créditos
 
 **Modelo 3D y aplicación en Unity:** Mauricio Mendiola Rivera. El modelo fue
-creado desde cero, sin incorporar geometría de terceros, como aportación a la
-División Universitaria de Neuroingeniería.
+creado desde cero, sin incorporar geometría de terceros, y sus derechos de
+uso, modificación y distribución fueron cedidos a la División Universitaria de
+Neuroingeniería. El proyecto puede escalarse y redistribuirse sin
+restricciones heredadas.
 
 **Limpieza del modelo, contenido didáctico, sitio web y sala interactiva:**
 Emmanuel Isaías Guízar Bayardo, División Universitaria de Neuroingeniería,
 UNAM.
-
-**Revisión académica del contenido:** Dr. Miguel Serrano-Reyes y M. Alicia
-Castillo Martínez.
 
 El modelo representa una motoneurona somática: soma y dendritas en la médula
 espinal, axón en un nervio periférico mielinizado por células de Schwann.

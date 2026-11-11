@@ -106,6 +106,7 @@ propaga indefinidamente por el circuito.
 
 | control | uso |
 |---|---|
+| Topología `orgánica` | punto de partida: conexiones irregulares, como un circuito real |
 | Topología `cadena` | primera aproximación, grupos infantiles |
 | Topología `convergencia` | suma espacial e inhibición |
 | Topología `anillo` | actividad autosostenida |
@@ -125,3 +126,25 @@ Se asignan por orden de conexión y se reutiliza el primero libre cuando
 alguien se desconecta, para no dejar huecos en la cadena. Un dispositivo puede
 solicitar un asiento concreto con `?seat=3` en la URL, útil para las pantallas
 fijas que deben ocupar siempre la misma posición del circuito.
+
+---
+
+## 6. Editar el circuito a mano
+
+En el mural, **Editar** activa el modo de conexiones: se toca la neurona de
+origen y luego la de destino. Si la conexión no existía se crea; si existía, se
+quita. Así se arma cualquier forma, incluidas dos o más neuronas sobre una sola.
+
+En cuanto se edita una conexión, la topología pasa a **manual** y queda
+congelada: quien se conecte después entra sin conexiones, y hay que agregarlas
+o elegir de nuevo una topología predefinida. **Limpiar** deja el circuito sin
+ninguna conexión, útil para construirlo desde cero frente al grupo.
+
+**Neuronas por grupo** ajusta convergencia y divergencia: en convergencia, ese
+número de neuronas apunta a una sola; en divergencia, una apunta a ese número.
+
+Con dos circuitos activos, las conexiones no pueden cruzar de uno a otro; el
+mural avisa si se intenta.
+
+Fuera del modo edición, tocar un nodo cambia su polaridad y mantenerlo
+presionado cambia su mielina.

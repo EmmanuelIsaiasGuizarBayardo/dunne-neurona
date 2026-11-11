@@ -195,6 +195,80 @@ async def main():
         check("volver a un circuito reconecta la cadena",
               sorted(r2["edges"]) == [[1, 2], [2, 3], [3, 4]], r2["edges"])
 
+    # --- topologías editables ---
+    async with websockets.connect(URL) as a, websockets.connect(URL) as b, \
+               websockets.connect(URL) as c, websockets.connect(URL) as d, \
+               websockets.connect(URL) as e, websockets.connect(URL) as f, \
+               websockets.connect(URL + "?role=mural") as mural:
+        for ws in (a, b, c, d, e, f, mural):
+            await recv(ws, "welcome")
+
+        # Orgánica: toda neurona tiene salida, sin lazos sobre sí misma.
+        await mural.send(json.dumps({"type": "config", "topology": "organica"}))
+        r = await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "organica", 4.0)
+        fuentes = {a for a, _ in r["edges"]}
+        check("orgánica: toda neurona tiene al menos una salida",
+              fuentes == {1, 2, 3, 4, 5, 6}, sorted(r["edges"]))
+        check("orgánica: sin conexiones de una neurona consigo misma",
+              all(a != b for a, b in r["edges"]))
+        primera = sorted(r["edges"])
+
+        # Determinista: la misma sala produce la misma red.
+        await mural.send(json.dumps({"type": "config", "topology": "cadena"}))
+        await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "cadena", 4.0)
+        await mural.send(json.dumps({"type": "config", "topology": "organica"}))
+        r = await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "organica", 4.0)
+        check("orgánica: es determinista", sorted(r["edges"]) == primera)
+
+        # Convergencia y divergencia con tamaño de grupo ajustable.
+        await mural.send(json.dumps({"type": "config", "topology": "convergencia", "fan": 2}))
+        r = await recv_until(mural, "roster",
+                             lambda m: m["config"]["topology"] == "convergencia" and m["config"]["fan"] == 2, 4.0)
+        check("convergencia de 2: bloques de tres",
+              sorted(r["edges"]) == [[1, 3], [2, 3], [4, 6], [5, 6]], sorted(r["edges"]))
+        await mural.send(json.dumps({"type": "config", "topology": "divergencia"}))
+        r = await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "divergencia", 4.0)
+        check("divergencia de 2: una sobre dos",
+              sorted(r["edges"]) == [[1, 2], [1, 3], [4, 5], [4, 6]], sorted(r["edges"]))
+
+        # Edición manual a partir de una cadena.
+        await mural.send(json.dumps({"type": "config", "topology": "cadena"}))
+        await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "cadena", 4.0)
+        await mural.send(json.dumps({"type": "edge", "from": 2, "to": 3}))   # quitar
+        await mural.send(json.dumps({"type": "edge", "from": 1, "to": 4}))   # agregar
+        await mural.send(json.dumps({"type": "edge", "from": 5, "to": 4}))   # dos a una
+        r = await recv_until(mural, "roster",
+                             lambda m: [5, 4] in m["edges"] and [1, 4] in m["edges"], 4.0)
+        check("editar pasa a modo manual", r["config"]["topology"] == "manual")
+        check("quitar una conexión de la cadena", [2, 3] not in r["edges"], sorted(r["edges"]))
+        check("dos neuronas sobre una sola", [1, 4] in r["edges"] and [5, 4] in r["edges"])
+
+        # El disparo sigue la conexión manual.
+        await e.send(json.dumps({"type": "spike"}))
+        got = await recv(d, "input", 4.0)
+        check("el disparo sigue la conexión manual", got["from_seat"] == 5, got)
+
+        # En modo manual, quien llega entra sin conexiones.
+        async with websockets.connect(URL) as g:
+            await recv(g, "welcome")
+            r = await recv_until(mural, "roster", lambda m: len(m["neurons"]) == 7, 4.0)
+            check("en modo manual las conexiones no se rehacen al entrar alguien",
+                  not any(7 in edge for edge in r["edges"]), sorted(r["edges"]))
+
+        # Una conexión consigo misma se rechaza con aviso.
+        await mural.send(json.dumps({"type": "edge", "from": 2, "to": 2}))
+        aviso = await recv(mural, "notice", 4.0)
+        check("se rechaza la conexión consigo misma", "misma" in aviso["text"], aviso)
+
+        await mural.send(json.dumps({"type": "edges", "op": "clear"}))
+        r = await recv_until(mural, "roster", lambda m: m["edges"] == [], 4.0)
+        check("limpiar deja el circuito sin conexiones", r["edges"] == [])
+
+        await mural.send(json.dumps({"type": "config", "topology": "cadena"}))
+        r = await recv_until(mural, "roster", lambda m: m["config"]["topology"] == "cadena", 4.0)
+        check("elegir una topología sale del modo manual",
+              sorted(r["edges"]) == [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6]], sorted(r["edges"]))
+
     # --- juegos colaborativos ---
     async with websockets.connect(URL) as a, websockets.connect(URL) as b, \
                websockets.connect(URL) as c, websockets.connect(URL) as d, \

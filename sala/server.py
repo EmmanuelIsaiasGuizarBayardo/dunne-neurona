@@ -93,7 +93,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Con 0.6 se requieren dos entradas coincidentes para alcanzar el umbral.
     "weight": 0.6,
 
-    "topology": "cadena",
+    # Topología inicial. La orgánica no tiene la regularidad de una cadena:
+    # conexiones mayormente locales, con atajos ocasionales, bucles y
+    # neuronas que reciben de varias a la vez.
+    "topology": "organica",
+
+    # Tamaño de grupo para convergencia y divergencia: cuántas neuronas
+    # convergen sobre una, o sobre cuántas diverge una.
+    "fan": 3,
+
+    # Semilla de la topología orgánica. La misma semilla produce la misma red.
+    "seed": 7,
 
     # Número de circuitos independientes. Con 2, los asientos se reparten en
     # dos mitades que no se conectan entre sí, lo que permite comparar dos
@@ -106,7 +116,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "locked": False,
 }
 
-TOPOLOGIES = ("cadena", "anillo", "convergencia", "divergencia")
+TOPOLOGIES = ("organica", "cadena", "anillo", "convergencia", "divergencia")
+MAX_FAN = 39
 
 # Juegos colaborativos. Ambos convierten a todo el grupo en las entradas de
 # una sola neurona compartida, de modo que el resultado depende del grupo y
@@ -272,6 +283,12 @@ class Hub:
         self._next_cid = 1
         self._lock = threading.RLock()
         self.game: dict[str, Any] | None = None
+
+        # Conexiones explícitas, como pares (origen, destino). Las topologías
+        # predefinidas las generan; en modo manual el operador las edita y la
+        # lista queda congelada aunque entren o salgan neuronas.
+        self.edges: set[tuple[int, int]] = set()
+        self.manual = False
         self.log: Callable[[str], None] = print
 
     # -- ciclo de vida ----------------------------------------------------
@@ -298,6 +315,7 @@ class Hub:
             self.clients[cid] = client
 
         self.regroup()
+        self.rebuild_edges()
         client.send({
             "type": "welcome",
             "id": cid,
@@ -318,6 +336,7 @@ class Hub:
             client.alive = False
             self.clients.pop(client.cid, None)
         self.regroup()
+        self.rebuild_edges()
         self.broadcast_roster()
         self.log(f"sale {client.role} cid={client.cid} asiento={client.seat}")
 
@@ -355,32 +374,119 @@ class Hub:
     def targets_of(self, seat: int | None) -> list[int]:
         """Asientos postsinápticos de un asiento dado.
 
-        Returns
-        -------
-        list of int
-            Vacía si el asiento no tiene salida en la topología actual.
+        Se leen de la lista explícita de conexiones. Se descartan destinos
+        ausentes y, con dos circuitos, los que pertenecen al otro circuito,
+        de modo que ninguna conexión manual pueda romper su independencia.
         """
         if seat is None:
             return []
-        # Los destinos se buscan solo dentro del mismo circuito.
+        present = set(self.seats())
         mine = self.group_of(seat)
-        order = [s for s in self.seats() if self.group_of(s) == mine]
-        if seat not in order or len(order) < 2:
-            return []
+        return sorted(b for a, b in self.edges
+                      if a == seat and b in present and self.group_of(b) == mine)
 
-        index = order.index(seat)
+    # -- generación de topologías -----------------------------------------
+
+    @staticmethod
+    def _uniform(seed: int, a: int, b: int) -> float:
+        """Número en [0, 1) determinista para el par ordenado (a, b).
+
+        Se usa un hash y no un generador aleatorio con estado: así la
+        existencia de la conexión a→b depende solo de a, b y la semilla, y no
+        del orden en que llegaron las neuronas ni de cuántas hay.
+        """
+        digest = hashlib.blake2b(f"{seed}:{a}:{b}".encode(), digest_size=8).digest()
+        return int.from_bytes(digest, "big") / 2 ** 64
+
+    def _preset_edges(self, order: list[int]) -> set[tuple[int, int]]:
+        """Conexiones de la topología predefinida para una secuencia de asientos."""
         kind = self.config["topology"]
+        n = len(order)
+        edges: set[tuple[int, int]] = set()
+        if n < 2:
+            return edges
 
         if kind == "cadena":
-            return [order[index + 1]] if index + 1 < len(order) else []
-        if kind == "anillo":
-            return [order[(index + 1) % len(order)]]
-        if kind == "convergencia":
-            # Todas apuntan a la última: demuestra suma espacial.
-            return [] if index == len(order) - 1 else [order[-1]]
-        if kind == "divergencia":
-            return order[1:] if index == 0 else []
-        return []
+            edges |= {(order[i], order[i + 1]) for i in range(n - 1)}
+
+        elif kind == "anillo":
+            edges |= {(order[i], order[(i + 1) % n]) for i in range(n)}
+
+        elif kind in ("convergencia", "divergencia"):
+            # Bloques de fan + 1 neuronas. En convergencia, las primeras fan de
+            # cada bloque apuntan a la última; en divergencia, la primera apunta
+            # a las demás. Con fan igual al total menos uno se recupera la
+            # versión de un solo bloque: todas sobre una, o una sobre todas.
+            fan = max(1, min(int(self.config.get("fan", 3)), n - 1))
+            for start in range(0, n, fan + 1):
+                block = order[start:start + fan + 1]
+                if len(block) < 2:
+                    continue
+                if kind == "convergencia":
+                    edges |= {(src, block[-1]) for src in block[:-1]}
+                else:
+                    edges |= {(block[0], dst) for dst in block[1:]}
+
+        elif kind == "organica":
+            seed = int(self.config.get("seed", 7))
+            for src in order:
+                scored = []
+                for dst in order:
+                    if dst == src:
+                        continue
+                    distance = abs(order.index(dst) - order.index(src))
+                    # Probabilidad que cae con la distancia, más una pequeña
+                    # probabilidad constante de atajos de largo alcance.
+                    p = 0.32 * math.exp(-(distance - 1) / 2.0) + 0.015
+                    u = self._uniform(seed, src, dst)
+                    scored.append((u / p, u < p, dst))
+                scored.sort()
+                # Al menos una salida, para que la señal siempre pueda seguir;
+                # hasta tres en total, para que el grafo siga siendo legible.
+                chosen = [scored[0][2]] + [d for _, ok, d in scored[1:] if ok]
+                edges |= {(src, dst) for dst in chosen[:3]}
+
+        return edges
+
+    def rebuild_edges(self) -> None:
+        """Regenera las conexiones si la topología es predefinida.
+
+        Se genera por separado dentro de cada circuito. En modo manual no se
+        toca nada: las conexiones son decisión del operador.
+        """
+        if self.manual:
+            return
+        edges: set[tuple[int, int]] = set()
+        groups = sorted({self.group_of(seat) for seat in self.seats()})
+        for group in groups:
+            order = [seat for seat in self.seats() if self.group_of(seat) == group]
+            edges |= self._preset_edges(order)
+        with self._lock:
+            self.edges = edges
+
+    def edit_edge(self, src: int, dst: int) -> str | None:
+        """Agrega o quita la conexión src→dst y pasa a modo manual.
+
+        Returns
+        -------
+        str or None
+            Motivo del rechazo, o ``None`` si la edición se aplicó.
+        """
+        present = set(self.seats())
+        if src == dst:
+            return "Una neurona no puede conectarse consigo misma."
+        if src not in present or dst not in present:
+            return "Esa neurona ya no está conectada."
+        if self.group_of(src) != self.group_of(dst):
+            return "Con dos circuitos, las conexiones no pueden cruzar de uno a otro."
+        with self._lock:
+            self.manual = True
+            self.config["topology"] = "manual"
+            if (src, dst) in self.edges:
+                self.edges.discard((src, dst))
+            else:
+                self.edges.add((src, dst))
+        return None
 
     def by_seat(self, seat: int) -> Client | None:
         """Devuelve el cliente que ocupa un asiento."""
@@ -697,11 +803,20 @@ class Hub:
                         pass
             if message.get("topology") in TOPOLOGIES:
                 self.config["topology"] = message["topology"]
+                self.manual = False
                 changed = True
+            if "fan" in message:
+                try:
+                    self.config["fan"] = max(1, min(MAX_FAN, int(message["fan"])))
+                    changed = True
+                except (TypeError, ValueError):
+                    pass
             if "groups" in message:
                 self.config["groups"] = max(1, min(2, int(message["groups"])))
                 self.regroup()
                 changed = True
+            if changed:
+                self.rebuild_edges()
             if "locked" in message:
                 self.config["locked"] = bool(message["locked"])
                 changed = True
@@ -716,6 +831,23 @@ class Hub:
 
         elif kind == "reset":
             self.broadcast({"type": "reset"}, roles=("neuron",))
+
+        elif kind == "edge" and client.role == "mural":
+            try:
+                reason = self.edit_edge(int(message["from"]), int(message["to"]))
+            except (KeyError, TypeError, ValueError):
+                reason = "Conexión inválida."
+            if reason:
+                client.send({"type": "notice", "text": reason})
+            self.broadcast_roster()
+
+        elif kind == "edges" and client.role == "mural":
+            if message.get("op") == "clear":
+                with self._lock:
+                    self.manual = True
+                    self.config["topology"] = "manual"
+                    self.edges = set()
+                self.broadcast_roster()
 
         elif kind == "tap" and client.role == "neuron":
             # El toque se reenvía al mural haya juego o no: es la entrada
@@ -931,7 +1063,7 @@ def main() -> int:
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--dir", type=Path, default=Path(__file__).parent)
-    ap.add_argument("--topology", choices=TOPOLOGIES, default="cadena")
+    ap.add_argument("--topology", choices=TOPOLOGIES, default="organica")
     ap.add_argument("--dilation", type=float, default=DEFAULT_CONFIG["dilation"])
     args = ap.parse_args()
 

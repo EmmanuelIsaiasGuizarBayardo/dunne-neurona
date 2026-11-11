@@ -729,3 +729,75 @@ body.room[data-polarity="inhibitory"][data-spike="on"]{
 }
 .readout > span:first-child{transition:color .2s ease}
 body.room[data-spike="on"] .readout > span:first-child{color:var(--type)}
+
+/* ===================================================== lienzos sin empuje ==
+   Un canvas y un svg tienen tamaño intrínseco: el canvas recibe por código el
+   tamaño de su caja anterior y el svg cuadrado exige tanta altura como ancho.
+   En el flujo normal impiden que la fila central se encoja y empujan la
+   consola fuera de la pantalla. Fuera del flujo, con el contenedor como
+   referencia, dejan de imponer tamaño. */
+
+.wall-grid{min-height:0;overflow:hidden}
+.panel{min-height:0;overflow:hidden}
+
+.raster-hold{position:relative;min-height:0}
+#raster{position:absolute;inset:0;width:100%;height:100%}
+
+.graph-hold{position:relative;min-height:0}
+#graph{position:absolute;inset:0;width:100%;height:100%;max-height:none}
+
+/* Disparo de nodo por escala, válido para cualquier tamaño de nodo. */
+.node-ring{transform-box:fill-box;transform-origin:center}
+.node.fire .node-ring{animation:burst-scale .75s ease-out}
+@keyframes burst-scale{
+  0%{transform:scale(1);opacity:1;stroke-width:4}
+  100%{transform:scale(2.4);opacity:0;stroke-width:1}
+}
+
+/* El éxito del juego se marca en el medidor, no pintando todo el panel. */
+.game-panel.burst{animation:none}
+.game-panel.burst .gauge-fill{animation:gauge-burst .7s ease-out}
+.game-panel.burst .game-title{animation:title-burst .7s ease-out}
+@keyframes gauge-burst{
+  0%{box-shadow:0 0 28px 6px var(--flame);filter:brightness(1.5)}
+  100%{box-shadow:none;filter:none}
+}
+@keyframes title-burst{0%{color:var(--flame)}100%{color:var(--type)}}
+.graph-panel .game-title{font-size:clamp(1.1rem,2vw,1.8rem);margin-bottom:10px}
+@media (prefers-reduced-motion:reduce){
+  .node.fire .node-ring,.game-panel.burst .gauge-fill,.game-panel.burst .game-title{animation:none}
+}
+
+/* El medidor del juego entra al flujo del panel del grafo, en su propia fila,
+   y el grafo ocupa lo que queda: así nunca se tapan. La colocación explícita
+   es necesaria porque el medidor oculto no ocupa celda y el grafo caería en
+   una fila de altura automática, quedando en cero. */
+.graph-panel{grid-template-rows:auto auto minmax(0,1fr)}
+.graph-panel > .panel-title{grid-row:1}
+.graph-panel > .game-panel{grid-row:2;position:static;inset:auto;padding:0 0 8px;background:none}
+.graph-panel > .graph-hold{grid-row:3}
+
+/* ======================================================= edición de red ==
+   El modo edición cambia el cursor y resalta el origen elegido, para que no
+   haya duda de en qué modo está el operador. */
+
+.stepper{align-items:center;gap:6px}
+.fan-value{
+  min-width:2ch;
+  text-align:center;
+  font-family:var(--mono);
+  font-size:14px;
+  color:var(--type);
+  font-variant-numeric:tabular-nums;
+}
+.fan-value.muted{color:var(--whisper)}
+.chip:disabled{opacity:.35;cursor:not-allowed}
+
+body.wall[data-editing="on"] .node{cursor:crosshair}
+body.wall[data-editing="on"] #graph-title .dim{color:var(--flame)}
+.node.selected .node-ring{
+  stroke:var(--type);
+  stroke-width:3;
+  opacity:1;
+  filter:url(#glow);
+}

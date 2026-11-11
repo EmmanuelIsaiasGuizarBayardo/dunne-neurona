@@ -38,7 +38,7 @@
       <p class="eeg-label">Lo que vería un EEG <span class="dim">la suma de toda la sala</span></p>
       <canvas id="eeg" aria-label="Onda de actividad sincronizada de la sala"></canvas>
     </div>
-    <canvas id="raster" aria-label="Registro de disparos por neurona"></canvas>
+    <div class="raster-hold"><canvas id="raster" aria-label="Registro de disparos por neurona"></canvas></div>
   </section>
 
   <!-- Grafo del circuito. El relleno de cada nodo es su voltaje en vivo. -->
@@ -65,6 +65,23 @@
   <div class="console-block">
     <p class="console-label">Topología</p>
     <div class="chips" id="topoChips"></div>
+  </div>
+
+  <div class="console-block">
+    <p class="console-label">Neuronas por grupo</p>
+    <div class="chips stepper">
+      <button type="button" class="chip" id="fanDown" aria-label="Menos neuronas por grupo">−</button>
+      <span class="fan-value" id="fanValue">3</span>
+      <button type="button" class="chip" id="fanUp" aria-label="Más neuronas por grupo">+</button>
+    </div>
+  </div>
+
+  <div class="console-block">
+    <p class="console-label">Conexiones</p>
+    <div class="chips">
+      <button type="button" class="chip" id="editEdges" aria-pressed="false">Editar</button>
+      <button type="button" class="chip" id="clearEdges">Limpiar</button>
+    </div>
   </div>
 
   <div class="console-block">
@@ -154,6 +171,9 @@ socket.addEventListener("message", event => {
     pendingTaps += 1;
     taps.push({ seat: msg.seat, t: performance.now() });
 
+  } else if (msg.type === "notice") {
+    notify(msg.text);
+
   } else if (msg.type === "vm") {
     vms.set(msg.seat, msg.v);
 
@@ -172,7 +192,13 @@ const send = payload => {
 
 function renderVitals() {
   $("count").textContent = roster.neurons.length;
-  $("topo").textContent = roster.config.topology ?? "—";
+  const topology = roster.config.topology ?? "—";
+  $("topo").textContent = TOPOLOGY_LABELS[topology] ?? topology;
+  $("fanValue").textContent = roster.config.fan ?? 3;
+  // El tamaño de grupo solo aplica a convergencia y divergencia.
+  const fanApplies = topology === "convergencia" || topology === "divergencia";
+  for (const id of ["fanDown", "fanUp"]) $(id).disabled = !fanApplies;
+  $("fanValue").classList.toggle("muted", !fanApplies);
   // El factor se muestra siempre para no representar una velocidad falsa.
   $("dil").textContent = `×${roster.config.dilation ?? "—"} más lento`;
 
@@ -204,7 +230,9 @@ function sizeCanvas() {
   raster.height = Math.max(1, Math.round(box.height * ratio));
   rctx.setTransform(ratio, 0, 0, ratio, 0, 0);
 }
-addEventListener("resize", sizeCanvas);
+// ResizeObserver y no solo resize: el contenedor cambia de tamaño también
+// cuando aparece el panel del juego o se reacomoda la consola.
+new ResizeObserver(() => sizeCanvas()).observe(document.querySelector(".raster-hold"));
 
 const styles = getComputedStyle(document.documentElement);
 const pick = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
@@ -231,7 +259,10 @@ function drawRaster() {
     return;
   }
 
-  const rowHeight = (height - 24) / rows.length;
+  // La fila del grupo tiene altura fija: repartirla con las demás la hacía
+  // ocupar la mitad del raster cuando hay una sola neurona conectada.
+  const sharedHeight = gameActive ? 20 : 0;
+  const rowHeight = (height - 24 - sharedHeight) / Math.max(1, seats.length);
 
   // Rejilla de tiempo cada cinco segundos, rotulada hacia atrás.
   rctx.strokeStyle = pick("--tint", "rgba(240,243,247,.06)");
@@ -249,7 +280,7 @@ function drawRaster() {
 
   // Fila de la neurona compartida: sus disparos son lo que el grupo logró.
   if (gameActive) {
-    const y = 6 + rowHeight / 2;
+    const y = 6 + sharedHeight / 2;
     rctx.fillStyle = pick("--flame", "#ff8419");
     rctx.font = "bold 10px ui-monospace, monospace";
     rctx.fillText("GRUPO", 2, y + 4);
@@ -264,8 +295,8 @@ function drawRaster() {
     for (const fire of sharedFires) {
       const x = xOf(fire.t);
       rctx.beginPath();
-      rctx.moveTo(x, y - rowHeight * 0.45);
-      rctx.lineTo(x, y + rowHeight * 0.45);
+      rctx.moveTo(x, y - sharedHeight * 0.42);
+      rctx.lineTo(x, y + sharedHeight * 0.42);
       rctx.stroke();
     }
     rctx.shadowBlur = 0;
@@ -273,8 +304,7 @@ function drawRaster() {
 
   // Una fila por neurona: etiqueta, línea base y barra de voltaje.
   seats.forEach((seat, seatIndex) => {
-    const index = gameActive ? seatIndex + 1 : seatIndex;
-    const y = 6 + index * rowHeight + rowHeight / 2;
+    const y = 6 + sharedHeight + seatIndex * rowHeight + rowHeight / 2;
     const neuron = roster.neurons.find(n => n.seat === seat) ?? {};
     const inhibitory = neuron.polarity === "inhibitory";
     const accent = inhibitory ? pick("--cool", "#7de3ff") : pick("--flame", "#ff8419");
@@ -391,7 +421,7 @@ function sizeEeg() {
   eeg.height = Math.max(1, Math.round(box.height * ratio));
   ectx.setTransform(ratio, 0, 0, ratio, 0, 0);
 }
-addEventListener("resize", sizeEeg);
+new ResizeObserver(() => sizeEeg()).observe(eeg);
 
 function stepEeg(now) {
   const dt = Math.min(now - lastEeg, 100);   // acota saltos de pestaña oculta
@@ -457,6 +487,7 @@ function drawEeg(now) {
 /* ------------------------------------------------------------------- grafo -- */
 
 const NS = "http://www.w3.org/2000/svg";
+let nodeRadius = 20;
 const graph = $("graph");
 const positions = new Map();
 
@@ -483,7 +514,12 @@ function renderGraph() {
   if (!seats.length) return;
 
   const circular = roster.config.topology === "anillo" || seats.length > 7;
-  const radius = size * 0.36;
+  const radius = size * 0.38;
+  // El tamaño del nodo se ajusta al espacio disponible: con 40 neuronas en
+  // círculo, un radio fijo de 20 las fundía en una sola mancha.
+  const spacing = circular ? (2 * Math.PI * radius) / seats.length
+                           : (size - 120) / Math.max(1, seats.length - 1);
+  nodeRadius = Math.max(5, Math.min(20, spacing / 2.8));
 
   seats.forEach((seat, index) => {
     if (circular) {
@@ -522,7 +558,7 @@ function renderGraph() {
     // Se recorta el segmento para que el nodo destino no tape la flecha.
     const dx = b.x - a.x, dy = b.y - a.y;
     const length = Math.hypot(dx, dy) || 1;
-    const pad = 24;
+    const pad = nodeRadius + 4;
     graph.appendChild(make("line", {
       x1: a.x + (dx / length) * pad, y1: a.y + (dy / length) * pad,
       x2: b.x - (dx / length) * pad, y2: b.y - (dy / length) * pad,
@@ -542,12 +578,14 @@ function renderGraph() {
       "data-group": neuron.group ?? 1,
       transform: `translate(${x} ${y})`,
     });
-    group.appendChild(make("circle", { r: 26, class: "node-hit" }));
-    group.appendChild(make("circle", { r: 20, class: "node-ring" }));
-    group.appendChild(make("circle", { r: 4, class: "node-core" }));
-    const label = make("text", { y: 36, class: "node-label" });
+    group.appendChild(make("circle", { r: nodeRadius + 7, class: "node-hit" }));
+    group.appendChild(make("circle", { r: nodeRadius, class: "node-ring" }));
+    group.appendChild(make("circle", { r: 2, class: "node-core" }));
+    const label = make("text", { y: nodeRadius + 13, class: "node-label",
+                                 "font-size": nodeRadius < 10 ? 8 : 11 });
     label.textContent = String(seat).padStart(2, "0");
     group.appendChild(label);
+    if (editing && source === seat) group.classList.add("selected");
     attachNodeControl(group, neuron);
     graph.appendChild(group);
   }
@@ -561,7 +599,8 @@ function updateCores() {
     const seat = Number(group.dataset.seat);
     const vm = vms.get(seat) ?? -70;
     const charge = Math.min(1, Math.max(0, (vm - V_FLOOR) / (V_TH - V_FLOOR)));
-    group.querySelector(".node-core").setAttribute("r", (3 + charge * 15).toFixed(1));
+    group.querySelector(".node-core").setAttribute("r",
+      (1.5 + charge * (nodeRadius - 3)).toFixed(1));
   }
 }
 
@@ -573,6 +612,58 @@ function updateCores() {
  * 40 personas ocupaba varias filas y empujaba los demás controles fuera de la
  * pantalla.
  */
+/* Modo edición de conexiones. Se toca una neurona de origen y luego una de
+   destino: si la conexión no existía se crea, y si existía se quita. Fuera de
+   este modo, tocar un nodo cambia su tipo. Los dos usos se separan por modo
+   porque compartir el mismo gesto haría imposible saber qué se pretendía. */
+let editing = false;
+let source = null;
+
+function setEditing(on) {
+  editing = on;
+  source = null;
+  $("editEdges").setAttribute("aria-pressed", String(on));
+  $("editEdges").textContent = on ? "Terminar edición" : "Editar";
+  document.body.dataset.editing = on ? "on" : "";
+  for (const node of graph.querySelectorAll(".node.selected")) node.classList.remove("selected");
+  notify(on ? "toca el origen y luego el destino" : null);
+}
+
+function pickNode(group, seat) {
+  if (source === null) {
+    source = seat;
+    group.classList.add("selected");
+    notify(`origen ${String(seat).padStart(2, "0")} · ahora el destino`);
+    return;
+  }
+  if (source === seat) {
+    source = null;
+    group.classList.remove("selected");
+    notify("toca el origen y luego el destino");
+    return;
+  }
+  send({ type: "edge", from: source, to: seat });
+  notify(`${String(source).padStart(2, "0")} → ${String(seat).padStart(2, "0")}`);
+  source = null;
+}
+
+let noticeTimer = null;
+const defaultHint = () => editing ? "toca el origen y luego el destino"
+                                  : "toca un nodo: polaridad · mantenlo: mielina";
+function notify(text) {
+  const hint = document.querySelector("#graph-title .dim");
+  clearTimeout(noticeTimer);
+  hint.textContent = text ?? defaultHint();
+  if (text) noticeTimer = setTimeout(() => { hint.textContent = defaultHint(); }, 4000);
+}
+
+$("editEdges").addEventListener("click", () => setEditing(!editing));
+$("clearEdges").addEventListener("click", () => send({ type: "edges", op: "clear" }));
+$("fanDown").addEventListener("click", () =>
+  send({ type: "config", fan: Math.max(1, (roster.config.fan ?? 3) - 1) }));
+$("fanUp").addEventListener("click", () =>
+  send({ type: "config", fan: (roster.config.fan ?? 3) + 1 }));
+
 function attachNodeControl(group, neuron) {
   let timer = null;
   let longPress = false;
@@ -582,6 +673,7 @@ function attachNodeControl(group, neuron) {
   };
   group.addEventListener("pointerdown", () => {
     longPress = false;
+    if (editing) return;
     timer = setTimeout(toggleMyelin, 550);
   });
   for (const ev of ["pointerleave", "pointercancel"]) {
@@ -589,6 +681,7 @@ function attachNodeControl(group, neuron) {
   }
   group.addEventListener("pointerup", () => {
     clearTimeout(timer);
+    if (editing) { pickNode(group, neuron.seat); return; }
     if (longPress) return;
     send({
       type: "polarity", seat: neuron.seat,
@@ -640,12 +733,16 @@ function travelEdge(from, to, delayMs, polarity) {
 
 /* ---------------------------------------------------------------- consola -- */
 
-for (const topology of ["cadena", "anillo", "convergencia", "divergencia"]) {
+const TOPOLOGY_LABELS = {
+  organica: "orgánica", cadena: "cadena", anillo: "anillo",
+  convergencia: "convergencia", divergencia: "divergencia",
+};
+for (const [topology, label] of Object.entries(TOPOLOGY_LABELS)) {
   const chip = document.createElement("button");
   chip.type = "button";
   chip.className = "chip";
   chip.dataset.topo = topology;
-  chip.textContent = topology;
+  chip.textContent = label;
   chip.addEventListener("click", () => send({ type: "config", topology }));
   $("topoChips").appendChild(chip);
 }

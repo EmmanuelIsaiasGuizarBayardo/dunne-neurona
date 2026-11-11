@@ -75,7 +75,7 @@ echo   Arrancando. Deja esta ventana abierta; Ctrl+C para detener.
 echo.
 
 rem --topology y --dilation se pueden ajustar aqui de forma permanente.
-python server.py --port 8000 --topology cadena --dilation 20
+python server.py --port 8000 --topology organica --dilation 20
 
 echo.
 echo   Servidor detenido.
