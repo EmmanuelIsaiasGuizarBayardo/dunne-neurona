@@ -294,31 +294,40 @@ function drawRaster() {
 
 /* ------------------------------------------------------------- onda de EEG -- */
 
-/* La onda es la suma de los potenciales postsinápticos de toda la sala. Cada
-   toque es una entrada sináptica cuya respuesta es la misma que usa el LIF de
-   cada tablet: un salto que decae con la constante de membrana. Sumada sobre
-   la sala, esa respuesta se reduce a un integrador con fuga:
+/* Onda tipo EEG de la sala.
 
-       nivel ← nivel · exp(−Δt / τ)  +  toques_nuevos / N
+   Cada toque es una entrada sináptica. La onda es la suma de los potenciales
+   postsinápticos de toda la sala, construida en tres etapas:
 
-   Es la ecuación de cada neurona, sin umbral ni disparo, aplicada a todas a
-   la vez. Toques dispersos producen bultos que se pierden en el ruido;
-   toques simultáneos se apilan en un pico. Por eso un EEG real solo detecta
-   la actividad de poblaciones sincronizadas.
+   1. Potencial postsináptico con subida y bajada. Dos filtros pasa-bajas en
+      cascada dan una respuesta de forma alfa, t·exp(−t/τ), en lugar de un
+      salto instantáneo. Es la forma de la corriente sináptica real.
+   2. Normalización por una población de referencia fija, no por las neuronas
+      conectadas. La amplitud de un EEG crece con el número absoluto de
+      fuentes sincronizadas: una sola neurona debe verse diminuta aunque esté
+      sola en la sala.
+   3. Filtro pasa-altas, como el de cualquier amplificador de EEG. Elimina la
+      línea base que deja la actividad sostenida, de modo que la señal oscila
+      alrededor de cero.
 
-   Se suman entradas y no disparos a propósito: el EEG registra potenciales
+   Con eso, una sincronización aislada produce un transitorio, como un
+   potencial evocado, y una sincronización repetida con ritmo produce una
+   oscilación: así se originan los ritmos del EEG.
+
+   Se suman entradas y no disparos: el EEG registra potenciales
    postsinápticos, no potenciales de acción. */
 
-const TAU_M = 20;                 // constante de membrana del LIF, en ms reales
-const EEG_SECONDS = 8;            // ventana visible
+const TAU_M = 20;            // constante de membrana del LIF, en ms reales
+const REF_POPULATION = 40;   // población de referencia: tamaño de diseño del grupo
+const TAU_HP = 1000;         // pasa-altas, en ms de reloj de pared
+const EEG_SECONDS = 8;
 const eeg = $("eeg");
 const ectx = eeg.getContext("2d");
 
 let pendingTaps = 0;
-let level = 0;
-let noise = 0;
+let stage1 = 0, stage2 = 0, previous = 0, highpass = 0, noise = 0;
 let lastEeg = performance.now();
-const trace = [];                 // [{t, v}]
+const trace = [];
 
 /** Muestra gaussiana por Box-Muller, para el ruido de fondo. */
 function gaussian() {
@@ -336,19 +345,31 @@ function sizeEeg() {
 addEventListener("resize", sizeEeg);
 
 function stepEeg(now) {
-  const dt = now - lastEeg;
+  const dt = Math.min(now - lastEeg, 100);   // acota saltos de pestaña oculta
   lastEeg = now;
-  const tau = TAU_M * (roster.config.dilation ?? 20);
-  const population = Math.max(1, roster.neurons.length);
 
-  level = level * Math.exp(-dt / tau) + pendingTaps / population;
+  // La mitad de τ_m dilatada da picos definidos; con τ_m completa los picos
+  // de un ritmo rápido se funden entre sí.
+  const tau = TAU_M * (roster.config.dilation ?? 20) / 2;
+  const a = Math.exp(-dt / tau);
+  const b = Math.exp(-dt / TAU_HP);
+
+  // Si hay más personas que la referencia, la escala se ajusta para que el
+  // pico siga cabiendo en pantalla; con menos, cada una pesa lo que debe.
+  const population = Math.max(REF_POPULATION, roster.neurons.length);
+  const input = pendingTaps * Math.E / population;   // un evento aislado: pico 1/población
   pendingTaps = 0;
 
+  stage1 = a * stage1 + input;
+  stage2 = a * stage2 + (dt / tau) * stage1;
+  highpass = b * (highpass + stage2 - previous);
+  previous = stage2;
+
   // Ruido de fondo filtrado: sin él, la actividad dispersa se vería como
-  // señal limpia y se perdería la lección de que solo la sincronía destaca.
+  // señal limpia y se perdería que solo la sincronía destaca.
   noise = 0.86 * noise + 0.14 * gaussian() * 0.05;
 
-  trace.push({ t: now, v: level + noise });
+  trace.push({ t: now, v: highpass + noise });
   while (trace.length && trace[0].t < now - EEG_SECONDS * 1000) trace.shift();
 }
 
@@ -357,11 +378,11 @@ function drawEeg(now) {
   const w = eeg.width / ratio, h = eeg.height / ratio;
   ectx.clearRect(0, 0, w, h);
 
-  // Escala fija: así un pico grande se ve grande y no se reescala solo. El
-  // techo cubre la sincronía completa de la sala (nivel cercano a 1); con un
-  // techo menor, el momento más importante de la actividad sale recortado.
-  const top = 1.05, bottom = -0.1;
-  const y = v => h - ((Math.min(top, v) - bottom) / (top - bottom)) * h;
+  // Escala fija y asimétrica: el pasa-altas produce un rebote negativo tras
+  // cada pico, y una sincronía completa de la sala ronda 0.9.
+  const top = 1.05, bottom = -0.45;
+  const clamp = v => Math.max(bottom, Math.min(top, v));
+  const y = v => h - ((clamp(v) - bottom) / (top - bottom)) * h;
 
   ectx.strokeStyle = pick("--tint", "rgba(240,243,247,.06)");
   ectx.lineWidth = 1;

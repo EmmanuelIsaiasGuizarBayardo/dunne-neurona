@@ -35,7 +35,10 @@
     alt="Modelo de una motoneurona: soma naranja, dendritas azules, axón verde con cuatro vainas de mielina amarillas."
     poster="./assets/poster.webp"
     loading="eager"
+    camera-controls
+    touch-action="none"
     disable-zoom
+    disable-pan
     interaction-prompt="none"
     environment-image="neutral"
     exposure="1.1"
@@ -395,9 +398,11 @@ function pulse(kind) {
 
 /* ------------------------------------------------------- estimular tocando -- */
 
-/* Todo el modelo es el área de toque, no solo el botón. Sin controles de
-   cámara, el gesto ya no compite con la rotación: un toque rápido de un niño
-   no hace girar ni saltar la neurona, solo la estimula. */
+/* Todo el modelo es el área de toque, no solo el botón, y además se puede
+   girar. Para que ambos gestos convivan se distinguen al soltar: un toque
+   corto y casi inmóvil estimula; un arrastre gira el modelo y no estimula.
+   Así un niño que toca rápido no hace girar la neurona, y quien quiere
+   explorarla puede hacerlo sin dispararla. */
 let game = null;
 
 function stimulate(x = null, y = null) {
@@ -427,10 +432,26 @@ function ripple(x, y) {
   setTimeout(() => dot.remove(), 600);
 }
 
+const TAP_MAX_MOVE_PX = 10;   // más desplazamiento que esto ya es un arrastre
+const TAP_MAX_MS = 300;        // más tiempo que esto ya es una pulsación sostenida
+const presses = new Map();     // un registro por dedo, para toques simultáneos
+
 viewer.addEventListener("pointerdown", event => {
-  event.preventDefault();
-  stimulate(event.clientX, event.clientY);
+  presses.set(event.pointerId, { x: event.clientX, y: event.clientY, t: performance.now() });
 });
+
+viewer.addEventListener("pointerup", event => {
+  const press = presses.get(event.pointerId);
+  presses.delete(event.pointerId);
+  if (!press) return;
+  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+  const held = performance.now() - press.t;
+  if (moved <= TAP_MAX_MOVE_PX && held <= TAP_MAX_MS) {
+    stimulate(event.clientX, event.clientY);
+  }
+});
+
+viewer.addEventListener("pointercancel", event => presses.delete(event.pointerId));
 
 $("stim").addEventListener("click", () => stimulate());
 

@@ -645,8 +645,11 @@ body.room[data-fire="on"] .mission{color:var(--flame)}
 
 /* El panel del juego ahora cubre el grafo y deja libre la onda. */
 .graph-panel{position:relative}
+/* Franja superior, no cubierta completa: durante la sincronía el grafo sigue
+   visible debajo del medidor. */
 .graph-panel .game-panel{
-  inset:0;
-  background:linear-gradient(to bottom,var(--ink) 0%,var(--ink) 86%,rgba(11,18,24,0) 100%);
+  inset:0 0 auto 0;
+  padding:clamp(10px,1.6vh,18px) 0 clamp(16px,2.4vh,26px);
+  background:linear-gradient(to bottom,var(--ink) 0%,var(--ink) 80%,rgba(11,18,24,0) 100%);
 }
 .graph-panel .game-title{font-size:clamp(1.4rem,2.8vw,2.4rem)}

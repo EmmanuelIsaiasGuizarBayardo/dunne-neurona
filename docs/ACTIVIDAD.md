@@ -82,7 +82,7 @@ Alguien propone contar. Si nadie lo propone en un minuto, quien narra pregunta:
 > ¿Qué necesitan para tocar todos al mismo tiempo?
 
 Con la cuenta regresiva, el grupo lo logra. **En la onda aparece un pico
-enorme**, unas cinco veces más alto que todo lo anterior.
+enorme**, unas tres o cuatro veces más alto que todo lo anterior.
 
 Ese es el momento de la estación. Hay que dejarlo respirar un segundo antes de
 explicar.
@@ -94,10 +94,22 @@ explicar.
 > se notaban cuando cada quien tocaba a su ritmo. Pero cuando miles de
 > neuronas se activan juntas, la señal es tan grande que se oye desde fuera.
 
-### 6:30 · Una segunda vuelta
+### 6:30 · El ritmo
 
-Se repite el reto sin ayuda. Ahora sale a la primera. El grupo ve que la
-coordinación se aprende.
+> Ahora no una vez: toquen juntos, todos al mismo tiempo, una y otra vez,
+> como si aplaudieran siguiendo una canción.
+
+Quien narra marca el pulso con la voz o con palmas, más o menos uno por
+segundo. **La onda deja de ser un pico y se vuelve una oscilación**: sube y baja
+con el ritmo del grupo.
+
+> Esto es una onda cerebral. Cuando muchas neuronas se sincronizan una y otra
+> vez con un ritmo, el EEG ve una onda que sube y baja. Su cerebro produce
+> ondas así ahora mismo, con distintos ritmos según si están despiertos,
+> concentrados o dormidos.
+
+Es el segundo momento fuerte de la estación, y conecta directo con lo que van a
+ver en NeuroDAC.
 
 ### 7:30 · Cierre
 
@@ -137,9 +149,21 @@ Reposición entre grupos: unos 40 segundos. No se consume material.
 Estas notas son para el personal, no para decirlas al público.
 
 **La onda del mural es una simulación, y está construida con cuidado.** Cada
-toque es una entrada sináptica, y su efecto es la misma respuesta de membrana
-que usa el modelo de cada tablet: un salto que decae con la constante de
-membrana. La onda es la suma de esas respuestas sobre toda la sala.
+toque es una entrada sináptica que produce un potencial postsináptico con
+subida y bajada. La suma de toda la sala pasa por un filtro pasa-altas, como en
+cualquier amplificador de EEG, lo que hace que la señal oscile alrededor de
+cero en lugar de acumularse.
+
+**La amplitud depende del número absoluto de personas sincronizadas**, no de la
+proporción. Una sola tablet produce una onda diminuta aunque esté sola en la
+sala; así funciona el EEG real. Por eso, para probar el mural con un solo
+dispositivo, conviene abrir la página de neurona en varias pestañas: cada una
+cuenta como una persona.
+
+**Una sola sincronía produce un transitorio**, parecido a un potencial evocado.
+**La sincronía repetida con ritmo produce una oscilación**, que es como se
+originan los ritmos del EEG. Si alguien pregunta por qué la onda no es
+sinusoidal desde el principio, esa es la respuesta.
 
 **Se suman entradas, no disparos**, porque el EEG registra potenciales
 postsinápticos sumados y no potenciales de acción. Si alguien con formación
